@@ -26,7 +26,7 @@ chmod 700 /workspace/secure/data
 mkdir -p /workspace/engine
 
 chown -R openpact-ai:openpact /workspace/engine
-chmod 770 /workspace/engine
+chmod -R 775 /workspace/engine
 
 # Create AI-accessible area (group-readable/writable for AI user)
 mkdir -p /workspace/ai-data/memory /workspace/ai-data/skills /workspace/ai-data/scripts
@@ -61,5 +61,57 @@ chown openpact-system:openpact /workspace/ai-data/SOUL.md /workspace/ai-data/USE
 chmod 644 /workspace/ai-data/SOUL.md /workspace/ai-data/USER.md 2>/dev/null || true
 chmod 664 /workspace/ai-data/MEMORY.md 2>/dev/null || true
 
-# Drop to unprivileged user
+# --- Launch OpenCode as openpact-ai with a restart loop ---
+
+# Generate OpenCode config JSON using Go (single source of truth)
+OC_CONFIG=$(/app/openpact opencode-config)
+if [ $? -ne 0 ]; then
+    echo "FATAL: failed to generate OpenCode config" >&2
+    exit 1
+fi
+
+# Build the allowlisted environment for the AI process.
+# Only system basics and LLM provider keys are passed through.
+OC_ENV=""
+for key in ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY AZURE_OPENAI_API_KEY OLLAMA_HOST; do
+    val=$(eval echo "\$$key")
+    if [ -n "$val" ]; then
+        OC_ENV="$OC_ENV $key=$val"
+    fi
+done
+
+# Read optional password from config (the Go binary already loaded it, but
+# we need it for the env var). Use a simple grep since it's YAML.
+OC_PASSWORD=$(grep -oP '^\s*password:\s*\K\S+' /workspace/secure/config.yaml 2>/dev/null || true)
+
+start_opencode() {
+    while true; do
+        echo "Starting opencode serve on port 4098 as openpact-ai..."
+        gosu openpact-ai env \
+            OPENCODE_CONFIG_CONTENT="$OC_CONFIG" \
+            HOME=/home/openpact-ai \
+            USER=openpact-ai \
+            PATH="$PATH" \
+            LANG="${LANG:-C.UTF-8}" \
+            TERM="${TERM:-xterm}" \
+            ${OC_PASSWORD:+OPENCODE_SERVER_PASSWORD=$OC_PASSWORD} \
+            $OC_ENV \
+            opencode serve --port 4098 --hostname 127.0.0.1
+        echo "opencode exited ($?), restarting in 2s..."
+        sleep 2
+    done
+}
+
+start_opencode &
+OPENCODE_PID=$!
+
+# Clean up the background loop on exit
+cleanup() {
+    echo "Stopping opencode restart loop (pid $OPENCODE_PID)..."
+    kill $OPENCODE_PID 2>/dev/null
+    wait $OPENCODE_PID 2>/dev/null
+}
+trap cleanup EXIT
+
+# Drop to unprivileged user and start the orchestrator
 exec gosu openpact-system /app/openpact "$@"

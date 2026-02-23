@@ -210,10 +210,10 @@ engine:
 | `type` | string | `opencode` | Engine type: `opencode` |
 | `provider` | string | `anthropic` | LLM provider for OpenCode |
 | `model` | string | `claude-sonnet-4-20250514` | Model identifier |
-| `port` | integer | `0` | Port for `opencode serve` (0 = auto-pick a free port) |
+| `port` | integer | `4098` | Port for `opencode serve` (must match the entrypoint's launch port) |
 | `password` | string | `""` | Optional password for the OpenCode server API (sets `OPENCODE_SERVER_PASSWORD`) |
 
-OpenPact runs `opencode serve` as a persistent child process and communicates with it via REST API. See the [OpenCode server documentation](https://opencode.ai/docs/server/) for details on the underlying API.
+OpenPact connects to an externally-managed `opencode serve` instance via REST API. In Docker, the entrypoint launches OpenCode as `openpact-ai` with a restart loop on the configured port; the Go engine is a pure HTTP client. See the [OpenCode server documentation](https://opencode.ai/docs/server/) for details on the underlying API.
 
 ### Supported Providers
 
@@ -339,7 +339,7 @@ engine:
   type: opencode
   provider: anthropic
   model: claude-sonnet-4-20250514
-  port: 0
+  port: 4098
   password: ""
 
 logging:

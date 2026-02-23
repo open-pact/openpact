@@ -82,8 +82,8 @@ Provides adapters for different AI backends. Communicates with the [OpenCode ser
 ```go
 // Engine interface
 type Engine interface {
-    Start(ctx context.Context) error   // Start opencode serve as child process
-    Stop() error                        // Gracefully stop the server
+    Start(ctx context.Context) error   // Connect to opencode serve
+    Stop() error                        // No-op (process managed externally)
     Send(ctx context.Context, sessionID string, messages []Message) (<-chan Response, error)
     SetSystemPrompt(prompt string)
 
@@ -97,7 +97,7 @@ type Engine interface {
 }
 ```
 
-The engine spawns `opencode serve --port <port>` as a persistent child process and communicates via HTTP. OpenCode manages all session storage (SQLite) internally.
+The engine connects to an externally-managed `opencode serve` instance over HTTP. In Docker, the entrypoint launches OpenCode as `openpact-ai` with a restart loop; the engine is a pure HTTP client. OpenCode manages all session storage (SQLite) internally.
 
 Implementations:
 - **OpenCode**: Supports 75+ LLM providers

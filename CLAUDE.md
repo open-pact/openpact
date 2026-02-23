@@ -62,15 +62,16 @@ Admin UI     → Admin API    → Orchestrator (SessionAPI) → opencode serve
 
 ## OpenCode Engine Integration
 
-The engine (`internal/engine/opencode.go`) communicates with [OpenCode](https://opencode.ai) by running `opencode serve` as a persistent child process and calling its REST API over HTTP.
+The engine (`internal/engine/opencode.go`) is a pure HTTP client that connects to an externally-managed [OpenCode](https://opencode.ai) `opencode serve` instance. In Docker, the entrypoint launches OpenCode as `openpact-ai` with a monitored restart loop; the Go engine just connects and talks HTTP.
 
 **Documentation:** https://opencode.ai/docs/server/
 **OpenAPI spec (at runtime):** `http://<host>:<port>/doc`
 
 **How it works:**
-1. On startup, the engine spawns `opencode serve --port <port> --hostname 127.0.0.1` as a child process
-2. It polls `GET /global/health` until the server is ready
-3. All session and message operations go through the REST API:
+1. The Docker entrypoint generates OpenCode config via `openpact opencode-config` (produces `OPENCODE_CONFIG_CONTENT` JSON)
+2. The entrypoint launches `opencode serve --port 4098 --hostname 127.0.0.1` as `openpact-ai` in a restart loop
+3. On startup, the engine's `Start()` sets `baseURL` and polls `GET /global/health` until the server is ready
+4. All session and message operations go through the REST API:
    - `POST /session` — Create a new session
    - `GET /session` — List all sessions
    - `GET /session/:id` — Get session details
@@ -79,9 +80,9 @@ The engine (`internal/engine/opencode.go`) communicates with [OpenCode](https://
    - `GET /session/:id/message` — Get message history
    - `POST /session/:id/abort` — Abort a running session
    - `GET /event` — SSE event stream for real-time updates
-4. On shutdown, the engine sends `SIGINT` to the child process for graceful exit
+5. On shutdown, `Stop()` is a no-op — the entrypoint manages the OpenCode process lifecycle
 
-**Auth:** If `engine.password` is set in config, requests use HTTP basic auth (`username: "opencode"`, password from config). The password is also passed to the child process via `OPENCODE_SERVER_PASSWORD` env var.
+**Auth:** If `engine.password` is set in config, requests use HTTP basic auth (`username: "opencode"`, password from config). The entrypoint also passes the password to OpenCode via `OPENCODE_SERVER_PASSWORD` env var.
 
 **Session management:** OpenCode manages all session storage internally (SQLite). Chat providers use per-channel session tracking (persisted to `<DataDir>/channel_sessions.json`), where each `(provider, channelID)` pair maps to its own session. If a channel has no session when a message arrives, one is created automatically. The Admin UI can interact with any session directly.
 
@@ -89,7 +90,7 @@ The engine (`internal/engine/opencode.go`) communicates with [OpenCode](https://
 ```yaml
 engine:
   type: opencode
-  port: 4098          # Port for opencode serve (default: pick random free port)
+  port: 4098          # Port for opencode serve (must match entrypoint)
   password: ""        # Optional OPENCODE_SERVER_PASSWORD
 ```
 

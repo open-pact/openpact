@@ -7,40 +7,31 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
 // OpenCode implements the Engine interface using `opencode serve` HTTP API.
+// It connects to an externally-managed OpenCode process (launched by the
+// container entrypoint) — it does NOT spawn or manage the process itself.
 type OpenCode struct {
 	cfg          Config
 	systemPrompt string
 	baseURL      string       // e.g. "http://127.0.0.1:4098"
 	client       *http.Client
-	cmd          *exec.Cmd    // opencode serve child process
 	mu           sync.Mutex
 }
 
-const defaultAIUser = "openpact-ai"
+// DefaultPort is the fixed port used by both the entrypoint (which launches
+// OpenCode) and the engine (which connects to it). Both sides must agree.
+const DefaultPort = 4098
 
 // NewOpenCode creates a new OpenCode engine
 func NewOpenCode(cfg Config) (*OpenCode, error) {
-	// Default RunAsUser to the standard AI user if it exists on the system
-	if cfg.RunAsUser == "" {
-		if _, err := user.Lookup(defaultAIUser); err == nil {
-			cfg.RunAsUser = defaultAIUser
-		}
-	}
-
 	return &OpenCode{
 		cfg: cfg,
 		client: &http.Client{
@@ -49,124 +40,30 @@ func NewOpenCode(cfg Config) (*OpenCode, error) {
 	}, nil
 }
 
-// Start spawns `opencode serve` as a child process and waits for it to be ready.
+// Start connects to an already-running `opencode serve` instance and waits
+// for it to be ready. The process is managed externally (e.g. by the Docker
+// entrypoint), so Start does not spawn anything.
 func (o *OpenCode) Start(ctx context.Context) error {
-	path, err := exec.LookPath("opencode")
-	if err != nil {
-		return fmt.Errorf("opencode binary not found in PATH: %w", err)
-	}
-	log.Printf("Found opencode at: %s", path)
-
-	// Pick port
 	port := o.cfg.Port
 	if port == 0 {
-		port, err = findFreePort()
-		if err != nil {
-			return fmt.Errorf("failed to find free port: %w", err)
-		}
+		port = DefaultPort
 	}
 
 	o.baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	// Build command
-	args := []string{"serve", "--port", fmt.Sprintf("%d", port), "--hostname", "127.0.0.1"}
-	cmd := exec.CommandContext(ctx, "opencode", args...)
-
-	// Build filtered environment (security: only allowlisted vars)
-	cmd.Env = buildFilteredEnv(o.cfg)
-
-	// Set password if configured
-	if o.cfg.Password != "" {
-		cmd.Env = append(cmd.Env, "OPENCODE_SERVER_PASSWORD="+o.cfg.Password)
-	}
-
-	// Generate OpenCode config to disable built-in tools and configure MCP
-	ocConfig := buildOpenCodeConfig(o.cfg)
-	if len(ocConfig) > 0 {
-		configJSON, err := json.Marshal(ocConfig)
-		if err != nil {
-			return fmt.Errorf("failed to marshal opencode config: %w", err)
-		}
-		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+string(configJSON))
-	}
-
-	// Run as restricted user if configured (Linux user separation)
-	if o.cfg.RunAsUser != "" {
-		if err := setSysProcCredential(cmd, o.cfg.RunAsUser); err != nil {
-			log.Printf("Warning: failed to set run_as_user %q: %v (running as current user)", o.cfg.RunAsUser, err)
-		}
-	}
-
-	if o.cfg.WorkDir != "" {
-		cmd.Dir = o.cfg.WorkDir
-	}
-
-	// Pipe stdout/stderr to our logs
-	cmd.Stdout = &logWriter{prefix: "opencode-serve"}
-	cmd.Stderr = &logWriter{prefix: "opencode-serve"}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start opencode serve: %w", err)
-	}
-
-	o.mu.Lock()
-	o.cmd = cmd
-	o.mu.Unlock()
-
-	log.Printf("opencode serve started (pid %d) on port %d", cmd.Process.Pid, port)
+	log.Printf("Connecting to opencode serve at %s", o.baseURL)
 
 	// Wait for server to be ready
 	if err := o.waitForReady(ctx); err != nil {
-		// Kill the process if we can't connect
-		_ = cmd.Process.Kill()
 		return fmt.Errorf("opencode serve failed to become ready: %w", err)
 	}
 
 	log.Printf("opencode serve is ready at %s", o.baseURL)
-
-	// Monitor process in background
-	go func() {
-		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-			log.Printf("opencode serve exited with error: %v", err)
-		}
-	}()
-
 	return nil
 }
 
-// Stop gracefully shuts down the opencode serve process.
+// Stop is a no-op — the OpenCode process is managed externally.
 func (o *OpenCode) Stop() error {
-	o.mu.Lock()
-	cmd := o.cmd
-	o.mu.Unlock()
-
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-
-	log.Println("Stopping opencode serve...")
-
-	// Try graceful shutdown via signal
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		// If signal fails, force kill
-		log.Printf("Failed to send interrupt, killing: %v", err)
-		return cmd.Process.Kill()
-	}
-
-	// Wait briefly for graceful exit
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case <-done:
-		log.Println("opencode serve stopped gracefully")
-	case <-time.After(5 * time.Second):
-		log.Println("opencode serve did not stop in time, killing")
-		_ = cmd.Process.Kill()
-	}
-
 	return nil
 }
 
@@ -630,71 +527,11 @@ func (o *OpenCode) setAuth(req *http.Request) {
 	}
 }
 
-// findFreePort asks the OS for an available port.
-func findFreePort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port, nil
-}
-
-// buildFilteredEnv creates an allowlisted environment for the OpenCode process.
-// Only system basics, XDG_ variables, and LLM provider keys are passed through.
-// Sensitive tokens (DISCORD_TOKEN, GITHUB_TOKEN, etc.) are excluded.
-func buildFilteredEnv(cfg Config) []string {
-	allowed := map[string]bool{
-		"PATH": true, "HOME": true, "USER": true,
-		"LANG": true, "TERM": true, "TZ": true, "TMPDIR": true,
-	}
-
-	providerKeys := map[string]bool{
-		"ANTHROPIC_API_KEY":    true,
-		"OPENAI_API_KEY":      true,
-		"GOOGLE_API_KEY":      true,
-		"AZURE_OPENAI_API_KEY": true,
-		"OLLAMA_HOST":         true,
-	}
-
-	var env []string
-	for _, e := range os.Environ() {
-		key := strings.SplitN(e, "=", 2)[0]
-		if allowed[key] || providerKeys[key] || strings.HasPrefix(key, "XDG_") {
-			env = append(env, e)
-		}
-	}
-
-	// Override HOME and USER for the AI user
-	if cfg.RunAsUser != "" {
-		if u, err := user.Lookup(cfg.RunAsUser); err == nil {
-			env = filterEnvKey(env, "HOME")
-			env = append(env, "HOME="+u.HomeDir)
-			env = filterEnvKey(env, "USER")
-			env = append(env, "USER="+cfg.RunAsUser)
-		}
-	}
-
-	return env
-}
-
-// filterEnvKey removes all entries with the given key from an env slice.
-func filterEnvKey(env []string, key string) []string {
-	prefix := key + "="
-	result := env[:0]
-	for _, e := range env {
-		if !strings.HasPrefix(e, prefix) {
-			result = append(result, e)
-		}
-	}
-	return result
-}
-
-// findMCPBinary locates the mcp-server binary. It looks next to the current
+// FindMCPBinary locates the mcp-server binary. It looks next to the current
 // executable first (they're always built and deployed together), then falls
 // back to PATH lookup. Returns an error if the binary cannot be found.
-func findMCPBinary() (string, error) {
-	// Look next to the current executable (e.g. /app/openpact → /app/mcp-server)
+func FindMCPBinary() (string, error) {
+	// Look next to the current executable (e.g. /app/openpact -> /app/mcp-server)
 	exe, err := os.Executable()
 	if err == nil {
 		sibling := filepath.Join(filepath.Dir(exe), "mcp-server")
@@ -711,9 +548,10 @@ func findMCPBinary() (string, error) {
 	return "", fmt.Errorf("mcp-server binary not found (looked next to %s and in PATH)", exe)
 }
 
-// buildOpenCodeConfig generates the OpenCode configuration that disables built-in
-// tools and configures our MCP server. Passed via OPENCODE_CONFIG_CONTENT env var.
-func buildOpenCodeConfig(cfg Config) map[string]interface{} {
+// BuildOpenCodeConfig generates the OpenCode configuration that disables built-in
+// tools and configures our MCP server. Used by the opencode-config subcommand to
+// produce JSON passed via OPENCODE_CONFIG_CONTENT env var.
+func BuildOpenCodeConfig(cfg Config) map[string]interface{} {
 	config := map[string]interface{}{
 		// Disable ALL built-in filesystem/shell tools
 		"tools": map[string]bool{
@@ -728,7 +566,7 @@ func buildOpenCodeConfig(cfg Config) map[string]interface{} {
 	}
 
 	// Auto-discover the MCP server binary
-	mcpBinary, err := findMCPBinary()
+	mcpBinary, err := FindMCPBinary()
 	if err != nil {
 		log.Printf("WARNING: %v — AI will have no tools available", err)
 		return config
@@ -736,9 +574,6 @@ func buildOpenCodeConfig(cfg Config) map[string]interface{} {
 
 	mcpEnv := map[string]string{
 		"OPENPACT_WORKSPACE_PATH": cfg.WorkDir,
-	}
-	for k, v := range cfg.MCPEnv {
-		mcpEnv[k] = v
 	}
 
 	config["mcp"] = map[string]interface{}{
@@ -751,53 +586,4 @@ func buildOpenCodeConfig(cfg Config) map[string]interface{} {
 	}
 
 	return config
-}
-
-// setSysProcCredential configures the command to run as a different Linux user.
-func setSysProcCredential(cmd *exec.Cmd, username string) error {
-	aiUser, err := user.Lookup(username)
-	if err != nil {
-		return fmt.Errorf("user %q not found: %w", username, err)
-	}
-
-	uid, err := strconv.Atoi(aiUser.Uid)
-	if err != nil {
-		return fmt.Errorf("invalid uid %q: %w", aiUser.Uid, err)
-	}
-
-	gid, err := strconv.Atoi(aiUser.Gid)
-	if err != nil {
-		return fmt.Errorf("invalid gid %q: %w", aiUser.Gid, err)
-	}
-
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{
-			Uid: uint32(uid),
-			Gid: uint32(gid),
-		},
-	}
-
-	return nil
-}
-
-// logWriter writes lines to log with a prefix.
-type logWriter struct {
-	prefix string
-	buf    []byte
-}
-
-func (w *logWriter) Write(p []byte) (n int, err error) {
-	w.buf = append(w.buf, p...)
-	for {
-		idx := bytes.IndexByte(w.buf, '\n')
-		if idx < 0 {
-			break
-		}
-		line := string(w.buf[:idx])
-		w.buf = w.buf[idx+1:]
-		if line != "" {
-			log.Printf("[%s] %s", w.prefix, line)
-		}
-	}
-	return len(p), nil
 }

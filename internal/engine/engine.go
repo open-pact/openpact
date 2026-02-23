@@ -98,15 +98,12 @@ type Engine interface {
 
 // Config holds engine configuration
 type Config struct {
-	Type      string            // "opencode"
-	Provider  string            // For OpenCode: provider name
-	Model     string            // Model to use
-	DataDir   string            // Data directory for stored credentials
-	WorkDir   string            // Working directory for engine subprocess
-	Port      int               // Port for opencode serve (0 = pick free port)
-	Password  string            // Optional OPENCODE_SERVER_PASSWORD
-	RunAsUser string            // Linux user to run OpenCode as (empty = current user)
-	MCPEnv    map[string]string // Extra env vars for MCP server process
+	Type     string // "opencode"
+	Provider string // For OpenCode: provider name
+	Model    string // Model to use
+	WorkDir  string // Working directory (workspace path, used for MCP config)
+	Port     int    // Port for opencode serve (0 = use DefaultPort)
+	Password string // Optional OPENCODE_SERVER_PASSWORD
 }
 
 // New creates a new engine based on config

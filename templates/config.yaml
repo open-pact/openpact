@@ -4,7 +4,7 @@ engine:
   type: opencode
   provider: anthropic  # anthropic, openai, google, ollama, etc.
   model: claude-sonnet-4-20250514
-  # run_as_user: ""  # Override AI user (default: auto-detects openpact-ai if present)
+  port: 4098  # Must match the entrypoint's OpenCode launch port
 
 workspace:
   path: /workspace

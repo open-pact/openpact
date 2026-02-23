@@ -51,7 +51,7 @@ RUN mkdir -p /app /workspace /workspace/secure/data /workspace/engine /workspace
     chmod 750 /app /workspace && \
     chmod 700 /workspace/secure && \
     chmod 700 /workspace/secure/data && \
-    chmod 770 /workspace/engine && \
+    chmod 775 /workspace/engine && \
     chmod 775 /workspace/ai-data && \
     chmod 770 /run/mcp
 

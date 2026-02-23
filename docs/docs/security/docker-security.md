@@ -33,9 +33,10 @@ Both `openpact-system` and `openpact-ai` are members of the `openpact` group. Fi
 
 1. Container starts as `root` (entrypoint only)
 2. `docker-entrypoint.sh` creates directories and sets file permissions
-3. Entrypoint drops to `openpact-system` via `gosu`
-4. Orchestrator spawns OpenCode with `SysProcAttr.Credential` set to `openpact-ai`
-5. MCP server binary inherits `openpact-ai` UID from its parent (OpenCode)
+3. Entrypoint generates OpenCode config via `openpact opencode-config`
+4. Entrypoint launches `opencode serve` as `openpact-ai` in a monitored restart loop
+5. Entrypoint drops to `openpact-system` via `gosu` and starts the orchestrator
+6. Orchestrator connects to the already-running OpenCode process over HTTP
 
 ## File Permission Model
 
@@ -114,9 +115,9 @@ services:
 
 ### AI Process Environment
 
-The AI process (OpenCode) receives a filtered environment. Only allowlisted variables pass through:
+The AI process (OpenCode) receives a filtered environment set by the Docker entrypoint. Only allowlisted variables pass through:
 
-**Included:** `PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TZ`, `TMPDIR`, `XDG_*`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `OLLAMA_HOST`
+**Included:** `PATH`, `HOME`, `USER`, `LANG`, `TERM`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `OLLAMA_HOST`
 
 **Excluded:** `DISCORD_TOKEN`, `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `ADMIN_JWT_SECRET`, and all other environment variables.
 
@@ -308,7 +309,7 @@ docker exec <container> ls -la /workspace/ai-data/
 ### Runtime
 
 - [ ] Entrypoint sets correct file permissions
-- [ ] `run_as_user` set to `openpact-ai` in config
+- [ ] OpenCode launches as `openpact-ai` (handled by entrypoint)
 - [ ] `mcp-server` binary exists at `/app/mcp-server` (auto-discovered)
 - [ ] Read-only root filesystem (recommended)
 - [ ] Capabilities dropped

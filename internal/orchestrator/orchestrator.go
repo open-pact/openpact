@@ -173,20 +173,14 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		log.Printf("Visit the admin UI to sign in, or run: openpact auth %s", cfg.Engine.Type)
 	}
 
-	// Build MCP env vars for the standalone MCP server
-	mcpEnv := buildMCPEnv(cfg)
-
-	// Initialize engine
+	// Initialize engine (connect-only — OpenCode is managed by the entrypoint)
 	engineCfg := engine.Config{
-		Type:      cfg.Engine.Type,
-		Provider:  cfg.Engine.Provider,
-		Model:     cfg.Engine.Model,
-		DataDir:   cfg.Workspace.DataDir(),
-		WorkDir:   cfg.Workspace.Path,
-		Port:      cfg.Engine.Port,
-		Password:  cfg.Engine.Password,
-		RunAsUser: cfg.Engine.RunAsUser,
-		MCPEnv:    mcpEnv,
+		Type:     cfg.Engine.Type,
+		Provider: cfg.Engine.Provider,
+		Model:    cfg.Engine.Model,
+		WorkDir:  cfg.Workspace.Path,
+		Port:     cfg.Engine.Port,
+		Password: cfg.Engine.Password,
 	}
 	eng, err := engine.New(engineCfg)
 	if err != nil {
@@ -772,28 +766,6 @@ func formatContextUsage(sessionID string, usage *engine.ContextUsage) string {
 	}
 
 	return b.String()
-}
-
-// buildMCPEnv creates the environment variable map for the standalone MCP server process.
-// The standalone binary derives all paths (ai-data, secure/data) from OPENPACT_WORKSPACE_PATH.
-func buildMCPEnv(cfg *config.Config) map[string]string {
-	env := map[string]string{
-		"OPENPACT_WORKSPACE_PATH": cfg.Workspace.Path,
-	}
-
-	// Build feature flags
-	var features []string
-	if cfg.Starlark.Enabled {
-		features = append(features, "scripts")
-	}
-	if cfg.GitHub.Enabled {
-		features = append(features, "github")
-	}
-	if len(features) > 0 {
-		env["OPENPACT_FEATURES"] = strings.Join(features, ",")
-	}
-
-	return env
 }
 
 // ReloadContext reloads context files (SOUL, USER, MEMORY)

@@ -70,13 +70,11 @@ type CalendarConfig struct {
 
 // EngineConfig configures the AI engine
 type EngineConfig struct {
-	Type      string `yaml:"type"`         // "opencode"
-	Provider  string `yaml:"provider"`     // For OpenCode: "anthropic", "openai", "ollama", etc.
-	Model     string `yaml:"model"`        // Model name
-	Port      int    `yaml:"port"`         // Port for opencode serve (0 = pick free port)
-	Password  string `yaml:"password"`     // Optional OPENCODE_SERVER_PASSWORD
-	RunAsUser string `yaml:"run_as_user"`  // Linux user for AI process (empty = current user)
-	MCPBinary string `yaml:"mcp_binary"`   // Deprecated: MCP binary is now auto-discovered. Ignored if set.
+	Type     string `yaml:"type"`     // "opencode"
+	Provider string `yaml:"provider"` // For OpenCode: "anthropic", "openai", "ollama", etc.
+	Model    string `yaml:"model"`    // Model name
+	Port     int    `yaml:"port"`     // Port for opencode serve (default: 4098)
+	Password string `yaml:"password"` // Optional OPENCODE_SERVER_PASSWORD
 }
 
 // WorkspaceConfig configures workspace paths
@@ -157,6 +155,7 @@ func Default() *Config {
 			Type:     "opencode",
 			Provider: "anthropic",
 			Model:    "claude-sonnet-4-20250514",
+			Port:     4098,
 		},
 		Workspace: WorkspaceConfig{
 			Path: "/workspace",

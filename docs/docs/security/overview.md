@@ -129,7 +129,7 @@ Layer 4: Container Isolation
 |---------|-------------|
 | Two-user model | `openpact-system` owns secrets/config, `openpact-ai` runs the AI |
 | File permissions | `secure/` (700), `ai-data/` (750), `ai-data/memory/` (770), `secure/config.yaml` (600) |
-| SysProcAttr | AI process spawned with `openpact-ai` UID/GID via syscall |
+| Entrypoint launch | AI process launched as `openpact-ai` by Docker entrypoint via `gosu` |
 | Group membership | Both users in `openpact` group for controlled shared access |
 
 ### Layer 2: Application Tool Restriction
@@ -171,7 +171,7 @@ Layer 4: Container Isolation
 
 - [ ] Configure TLS (use reverse proxy or native HTTPS)
 - [ ] Set strong admin password
-- [ ] Review default configuration (especially `run_as_user`)
+- [ ] Review default configuration
 - [ ] Set up monitoring and alerting
 - [ ] Configure IP allowlisting if possible
 

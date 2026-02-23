@@ -74,7 +74,7 @@ The AI process receives a filtered environment. Only these variables pass throug
 
 **Explicitly excluded:** `DISCORD_TOKEN`, `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `ADMIN_JWT_SECRET`, all Starlark secrets, and any other environment variable not in the allowlist.
 
-When `run_as_user` is configured, `HOME` and `USER` are overridden to point to the AI user's home directory.
+In Docker, the entrypoint sets `HOME` and `USER` to the AI user's home directory when launching OpenCode as `openpact-ai`.
 
 ## MCP Tool Boundaries
 
@@ -116,22 +116,15 @@ Each MCP tool has explicit capability boundaries:
 
 ### Enabling User Separation
 
-```yaml
-# openpact.yaml
-engine:
-  type: opencode
-  run_as_user: "openpact-ai"     # Run AI as restricted user
-```
+In Docker, user separation is automatic. The entrypoint launches OpenCode as `openpact-ai` and the orchestrator as `openpact-system` — no configuration needed.
 
 The MCP server binary is auto-discovered at startup (next to the main binary, or via PATH). No configuration is needed.
-
-Set `run_as_user` to empty string for development mode (runs AI as current user).
 
 ### Dev Mode vs Production
 
 | Setting | Dev Mode | Production (Docker) |
 |---------|----------|---------------------|
-| `run_as_user` | `""` (empty) | `"openpact-ai"` |
+| User separation | None (single user) | Entrypoint runs OpenCode as `openpact-ai` |
 | MCP server | Auto-discovered from PATH | Auto-discovered at `/app/mcp-server` |
 | Built-in tools | Disabled (config still applied) | Disabled |
 | File permissions | Host OS permissions | Entrypoint sets strict permissions |
