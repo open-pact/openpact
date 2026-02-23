@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -40,10 +39,6 @@ type Orchestrator struct {
 	providerMu     sync.RWMutex
 	providers      map[string]chat.Provider
 	providerStatus map[string]admin.ProviderStatusInfo
-
-	// Communication pipes for MCP
-	mcpReader *io.PipeReader
-	mcpWriter *io.PipeWriter
 
 	// Per-channel session tracking: "provider:channelID" -> sessionID
 	channelSessions map[string]string
@@ -111,82 +106,65 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		}
 	}
 
-	// Create MCP pipes
-	o.mcpReader, o.mcpWriter = io.Pipe()
+	// Initialize MCP server (in-process, for admin API tool introspection)
+	o.mcpServer = mcp.NewServer(nil, nil)
 
-	// Initialize MCP server
-	mcpResponseReader, mcpResponseWriter := io.Pipe()
-	o.mcpServer = mcp.NewServer(o.mcpReader, mcpResponseWriter)
-
-	// Register default MCP tools
-	mcp.RegisterDefaultTools(o.mcpServer, cfg.Workspace.Path, o.ReloadContext)
-
-	// Register calendar tools if calendars are configured
-	if len(cfg.Calendars) > 0 {
-		calConfigs := make([]mcp.CalendarConfig, len(cfg.Calendars))
-		for i, c := range cfg.Calendars {
-			calConfigs[i] = mcp.CalendarConfig{Name: c.Name, URL: c.URL}
-		}
-		mcp.RegisterCalendarTools(o.mcpServer, calConfigs)
+	// Build registration config for MCP tools
+	regCfg := mcp.RegistrationConfig{
+		WorkspacePath: cfg.Workspace.Path,
+		DataDir:       cfg.Workspace.DataDir(),
+		ReloadContext: o.ReloadContext,
+		Chat:          o,
+		Allowlist:     cfg.Admin.Allowlist,
 	}
 
-	// Register vault tools if vault is configured
+	// Calendar config
+	if len(cfg.Calendars) > 0 {
+		regCfg.Calendars = make([]mcp.CalendarConfig, len(cfg.Calendars))
+		for i, c := range cfg.Calendars {
+			regCfg.Calendars[i] = mcp.CalendarConfig{Name: c.Name, URL: c.URL}
+		}
+	}
+
+	// Vault config
 	if cfg.Vault.Path != "" {
-		vaultCfg := mcp.VaultConfig{
+		regCfg.Vault = &mcp.VaultConfig{
 			Path:     cfg.Vault.Path,
 			GitRepo:  cfg.Vault.GitRepo,
 			AutoSync: cfg.Vault.AutoSync,
 		}
-		mcp.RegisterVaultTools(o.mcpServer, vaultCfg)
 	}
 
-	// Register web tools (always available)
-	mcp.RegisterWebTools(o.mcpServer)
-
-	// Register GitHub tools if enabled
+	// GitHub config
 	if cfg.GitHub.Enabled {
 		token := os.Getenv("GITHUB_TOKEN")
 		if token != "" {
-			githubCfg := mcp.GitHubConfig{Token: token}
-			mcp.RegisterGitHubTools(o.mcpServer, githubCfg)
+			regCfg.GitHub = &mcp.GitHubConfig{Token: token}
 		} else {
 			log.Println("GitHub enabled but GITHUB_TOKEN not set, skipping")
 		}
 	}
 
-	// Register Starlark script tools if enabled
+	// Starlark script config
 	if cfg.Starlark.Enabled {
-		scriptCfg := mcp.ScriptConfig{
+		regCfg.Script = &mcp.ScriptRegistrationConfig{
 			ScriptsDir:     cfg.Workspace.ScriptsDir(),
 			MaxExecutionMs: cfg.Starlark.MaxExecutionMs,
 		}
-
-		// Load secrets from store
-		secretStore := admin.NewSecretStore(cfg.Workspace.DataDir())
-		secrets, err := secretStore.All()
-		if err != nil {
-			log.Printf("Warning: failed to load secrets: %v", err)
-			secrets = map[string]string{}
-		}
-		scriptCfg.Secrets = secrets
-
-		// Initialize script store for approval checking if admin is enabled
-		if cfg.Admin.Enabled {
-			scriptStore, err := admin.NewScriptStore(cfg.Workspace.ScriptsDir(), cfg.Workspace.DataDir(), cfg.Admin.Allowlist)
-			if err != nil {
-				log.Printf("Warning: failed to create script store for approvals: %v", err)
-			} else {
-				o.scriptStore = scriptStore
-				scriptCfg.ScriptStore = scriptStore
-				log.Println("Script approval checking enabled")
-			}
-		}
-
-		mcp.RegisterScriptTools(o.mcpServer, scriptCfg)
 	}
 
-	// Register chat tools — always registered, providers resolved dynamically
-	mcp.RegisterChatTools(o.mcpServer, o)
+	// Register all tools
+	mcp.RegisterAllTools(o.mcpServer, regCfg)
+
+	// Store script store reference for admin API
+	if regCfg.Script != nil && cfg.Admin.Enabled {
+		scriptStore, err := admin.NewScriptStore(cfg.Workspace.ScriptsDir(), cfg.Workspace.DataDir(), cfg.Admin.Allowlist)
+		if err != nil {
+			log.Printf("Warning: failed to create script store for admin: %v", err)
+		} else {
+			o.scriptStore = scriptStore
+		}
+	}
 
 	// Check engine authentication
 	authStatus := auth.CheckAuth(cfg.Engine.Type)
@@ -195,15 +173,21 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		log.Printf("Visit the admin UI to sign in, or run: openpact auth %s", cfg.Engine.Type)
 	}
 
+	// Build MCP env vars for the standalone MCP server
+	mcpEnv := buildMCPEnv(cfg)
+
 	// Initialize engine
 	engineCfg := engine.Config{
-		Type:     cfg.Engine.Type,
-		Provider: cfg.Engine.Provider,
-		Model:    cfg.Engine.Model,
-		DataDir:  cfg.Workspace.DataDir(),
-		WorkDir:  cfg.Workspace.Path,
-		Port:     cfg.Engine.Port,
-		Password: cfg.Engine.Password,
+		Type:      cfg.Engine.Type,
+		Provider:  cfg.Engine.Provider,
+		Model:     cfg.Engine.Model,
+		DataDir:   cfg.Workspace.DataDir(),
+		WorkDir:   cfg.Workspace.Path,
+		Port:      cfg.Engine.Port,
+		Password:  cfg.Engine.Password,
+		RunAsUser: cfg.Engine.RunAsUser,
+		MCPBinary: cfg.Engine.MCPBinary,
+		MCPEnv:    mcpEnv,
 	}
 	eng, err := engine.New(engineCfg)
 	if err != nil {
@@ -220,9 +204,6 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	}
 
 	o.engine = eng
-
-	// Close unused pipe ends to avoid leaks
-	_ = mcpResponseReader
 
 	return o, nil
 }
@@ -413,13 +394,6 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	log.Println("OpenPact orchestrator starting...")
 
-	// Start MCP server in background
-	go func() {
-		if err := o.mcpServer.Start(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("MCP server error: %v", err)
-		}
-	}()
-
 	// Start engine (launches opencode serve)
 	if err := o.engine.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start engine: %w", err)
@@ -503,14 +477,6 @@ func (o *Orchestrator) shutdown() error {
 	// Stop MCP server
 	if o.mcpServer != nil {
 		o.mcpServer.Stop()
-	}
-
-	// Close pipes
-	if o.mcpWriter != nil {
-		o.mcpWriter.Close()
-	}
-	if o.mcpReader != nil {
-		o.mcpReader.Close()
 	}
 
 	o.mu.Lock()
@@ -802,6 +768,28 @@ func formatContextUsage(sessionID string, usage *engine.ContextUsage) string {
 	}
 
 	return b.String()
+}
+
+// buildMCPEnv creates the environment variable map for the standalone MCP server process.
+func buildMCPEnv(cfg *config.Config) map[string]string {
+	env := map[string]string{
+		"OPENPACT_WORKSPACE_PATH": cfg.Workspace.Path,
+		"OPENPACT_DATA_DIR":       cfg.Workspace.DataDir(),
+	}
+
+	// Build feature flags
+	var features []string
+	if cfg.Starlark.Enabled {
+		features = append(features, "scripts")
+	}
+	if cfg.GitHub.Enabled {
+		features = append(features, "github")
+	}
+	if len(features) > 0 {
+		env["OPENPACT_FEATURES"] = strings.Join(features, ",")
+	}
+
+	return env
 }
 
 // ReloadContext reloads context files (SOUL, USER, MEMORY)

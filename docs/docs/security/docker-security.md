@@ -10,63 +10,82 @@ OpenPact is designed to run securely in Docker containers. This page covers the 
 
 ## Two-User Model
 
-OpenPact uses a two-user model in Docker to minimize the attack surface:
+OpenPact uses a two-user model in Docker to separate the privileged orchestrator from the restricted AI engine:
 
 ### User Roles
 
-| User | UID | Purpose | Permissions |
-|------|-----|---------|-------------|
-| `root` | 0 | Container initialization | Creates directories, sets permissions |
-| `openpact` | 1000 | Runtime execution | Runs application, owns data |
+| User | Purpose | Permissions |
+|------|---------|-------------|
+| `root` | Container initialization only | Entrypoint sets file permissions, then drops privileges |
+| `openpact-system` | Orchestrator, admin UI, secrets management | Owns all files, runs main process |
+| `openpact-ai` | AI engine (OpenCode), MCP tools | Group member, restricted file access |
+
+Both `openpact-system` and `openpact-ai` are members of the `openpact` group. File permissions use group membership to give the AI user controlled access.
 
 ### Why Two Users?
 
-1. **Root for setup only** - Some operations require root (creating users, setting permissions)
-2. **Non-root for runtime** - The application never needs root privileges
-3. **Principle of least privilege** - Runtime has only necessary permissions
-4. **Container escape mitigation** - If compromised, attacker has limited privileges
+1. **Privilege separation** -- The AI process cannot access secrets, config, or the data directory
+2. **Defense in depth** -- Even if the AI bypasses MCP tool restrictions, Linux permissions prevent access
+3. **Container escape mitigation** -- A compromised AI process has minimal privileges
+4. **Auditable** -- `ps aux` shows which user each process runs as
 
-### Dockerfile Implementation
+### How It Works
 
-```dockerfile
-FROM alpine:3.19 AS base
+1. Container starts as `root` (entrypoint only)
+2. `docker-entrypoint.sh` creates directories and sets file permissions
+3. Entrypoint drops to `openpact-system` via `gosu`
+4. Orchestrator spawns OpenCode with `SysProcAttr.Credential` set to `openpact-ai`
+5. MCP server binary inherits `openpact-ai` UID from its parent (OpenCode)
 
-# Create non-root user
-RUN addgroup -g 1000 -S openpact && \
-    adduser -u 1000 -S openpact -G openpact
+## File Permission Model
 
-# Create directories with correct ownership
-RUN mkdir -p /data /workspace /app && \
-    chown -R openpact:openpact /data /workspace
+The entrypoint sets these permissions at container startup:
 
-# Copy application
-COPY --chown=openpact:openpact openpact /app/openpact
-
-# Switch to non-root user for runtime
-USER openpact
-
-WORKDIR /app
-ENTRYPOINT ["/app/openpact"]
-CMD ["serve"]
 ```
+/workspace/               750  openpact-system:openpact  # AI can traverse
+/workspace/data/          700  openpact-system:openpact  # AI CANNOT access
+/workspace/memory/        770  openpact-system:openpact  # AI can read+write
+/workspace/scripts/       750  openpact-system:openpact  # AI can read
+/workspace/skills/        750  openpact-system:openpact  # AI can read
+/workspace/config.yaml    600  openpact-system:openpact  # AI CANNOT access
+/workspace/SOUL.md        640  openpact-system:openpact  # AI can read
+/workspace/USER.md        640  openpact-system:openpact  # AI can read
+/workspace/MEMORY.md      660  openpact-system:openpact  # AI can read+write
+```
+
+### What This Prevents
+
+| Attack | Prevention |
+|--------|-----------|
+| AI reads secrets from data dir | 700 permission blocks group access |
+| AI reads config.yaml (may contain passwords) | 600 permission blocks group access |
+| AI modifies SOUL.md directly | 640 permission blocks group write |
+| AI writes to scripts dir | 750 permission blocks group write |
+| AI reads/writes memory | 770/660 permits via MCP tools |
 
 ## Container Isolation
 
-### Filesystem Isolation
+### Filesystem Layout
 
 ```
 Container Filesystem
-├── /app/                 # Application (read-only in production)
-│   └── openpact          # Binary
-├── /data/                # Persistent data (mounted volume)
-│   ├── scripts/          # Starlark scripts
-│   ├── secrets.json      # Encrypted secrets
-│   ├── approvals.json    # Script approvals
-│   └── jwt_secret        # JWT signing key
-├── /workspace/           # AI workspace (mounted volume)
-│   └── ...               # User files
-└── /config/              # Configuration (mounted or built-in)
-    └── openpact.yaml     # Config file
+├── /app/                    # Application binaries
+│   ├── openpact             # Orchestrator binary
+│   ├── mcp-server           # Standalone MCP server binary
+│   └── templates/           # Default config/context templates
+├── /home/
+│   ├── openpact-system/     # System user home
+│   │   └── .local/share/opencode -> /workspace/data/opencode
+│   └── openpact-ai/         # AI user home
+│       └── .local/share/opencode -> /workspace/data/opencode
+└── /workspace/              # Bind-mounted workspace volume
+    ├── data/                # Secrets, JWT key, approvals (owner-only)
+    ├── memory/              # Daily memory files (group-writable)
+    ├── scripts/             # Starlark scripts (group-readable)
+    ├── config.yaml          # Configuration (owner-only)
+    ├── SOUL.md              # AI persona (group-readable)
+    ├── USER.md              # User profile (group-readable)
+    └── MEMORY.md            # Long-term memory (group-read/write)
 ```
 
 ### Read-Only Root Filesystem
@@ -82,140 +101,18 @@ services:
     tmpfs:
       - /tmp:size=64M,mode=1777
     volumes:
-      - openpact-data:/data
       - ./workspace:/workspace
-```
-
-This prevents any writes to the container filesystem, limiting what a compromised process can do.
-
-### Volume Mounts
-
-| Volume | Purpose | Permissions |
-|--------|---------|-------------|
-| `/data` | Persistent data (secrets, approvals) | `openpact:openpact`, 700 |
-| `/workspace` | AI workspace files | `openpact:openpact`, 755 |
-| `/config` | Configuration (optional) | Read-only |
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    volumes:
-      # Named volume for data (Docker manages)
-      - openpact-data:/data
-
-      # Bind mount for workspace (user manages)
-      - ./workspace:/workspace
-
-      # Read-only config
-      - ./openpact.yaml:/config/openpact.yaml:ro
-
-volumes:
-  openpact-data:
-```
-
-## Security Hardening
-
-### Dropped Capabilities
-
-Remove unnecessary Linux capabilities:
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE  # Only if binding to port < 1024
-```
-
-### No Privilege Escalation
-
-Prevent privilege escalation attacks:
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    security_opt:
-      - no-new-privileges:true
-```
-
-### Resource Limits
-
-Prevent resource exhaustion:
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 128M
-```
-
-### Seccomp Profile
-
-Use a restrictive seccomp profile:
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    security_opt:
-      - seccomp:seccomp-profile.json
-```
-
-## Network Security
-
-### Network Modes
-
-| Mode | Use Case | Security |
-|------|----------|----------|
-| Bridge (default) | General use | Isolated network namespace |
-| Host | Not recommended | Shares host network (less secure) |
-| None | Maximum isolation | No network access |
-| Custom | Production | Define allowed connections |
-
-### Network Configuration
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    networks:
-      - frontend  # Admin UI access
-      - backend   # Internal services only
-
-networks:
-  frontend:
-    driver: bridge
-  backend:
-    driver: bridge
-    internal: true  # No external access
-```
-
-### Port Exposure
-
-Expose only necessary ports:
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    ports:
-      - "127.0.0.1:8080:8080"  # Admin UI - localhost only
-      - "1455:1455"             # OpenCode OAuth callback
-    # MCP uses stdio, no port needed
 ```
 
 ## Environment Variable Security
+
+### AI Process Environment
+
+The AI process (OpenCode) receives a filtered environment. Only allowlisted variables pass through:
+
+**Included:** `PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TZ`, `TMPDIR`, `XDG_*`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `OLLAMA_HOST`
+
+**Excluded:** `DISCORD_TOKEN`, `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `ADMIN_JWT_SECRET`, and all other environment variables.
 
 ### Sensitive Variables
 
@@ -224,37 +121,80 @@ services:
 services:
   openpact:
     environment:
-      # Reference from .env file
-      ADMIN_JWT_SECRET: "${ADMIN_JWT_SECRET}"
-      WEATHER_API_KEY: "${WEATHER_API_KEY}"
+      DISCORD_TOKEN: "${DISCORD_TOKEN}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
 ```
 
 ```bash
 # .env file (not committed to git)
-ADMIN_JWT_SECRET=your-256-bit-secret
-WEATHER_API_KEY=sk-abc123...
+DISCORD_TOKEN=your-discord-token
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### Docker Secrets (Swarm/Compose)
+Note: `DISCORD_TOKEN` is used by the orchestrator (openpact-system) to connect to Discord. It is **not** passed to the AI process.
 
-For production, use Docker secrets:
+## Security Hardening
+
+### Dropped Capabilities
+
+Remove unnecessary Linux capabilities:
 
 ```yaml
-# docker-compose.yml
 services:
   openpact:
-    secrets:
-      - jwt_secret
-      - weather_api_key
-    environment:
-      ADMIN_JWT_SECRET_FILE: /run/secrets/jwt_secret
-      WEATHER_API_KEY_FILE: /run/secrets/weather_api_key
+    cap_drop:
+      - ALL
+```
 
-secrets:
-  jwt_secret:
-    external: true
-  weather_api_key:
-    external: true
+### No Privilege Escalation
+
+```yaml
+services:
+  openpact:
+    security_opt:
+      - no-new-privileges:true
+```
+
+### Resource Limits
+
+```yaml
+services:
+  openpact:
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+```
+
+## Network Security
+
+### Port Exposure
+
+```yaml
+services:
+  openpact:
+    ports:
+      - "127.0.0.1:8080:8080"  # Admin UI - localhost only
+      - "1455:1455"             # OpenCode OAuth callback
+    # MCP uses stdio between processes, no network port needed
+```
+
+### Network Configuration
+
+```yaml
+services:
+  openpact:
+    networks:
+      - frontend   # Admin UI access
+      - backend    # Internal services only
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true  # No external access
 ```
 
 ## Complete Production Example
@@ -269,7 +209,6 @@ services:
     container_name: openpact
 
     # Security settings
-    user: "1000:1000"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -282,20 +221,17 @@ services:
 
     # Volumes
     volumes:
-      - openpact-data:/data
       - ./workspace:/workspace
-      - ./openpact.yaml:/config/openpact.yaml:ro
 
-    # Environment
+    # Environment (orchestrator sees all, AI process gets filtered subset)
     environment:
-      OPENPACT_CONFIG: /config/openpact.yaml
-      ADMIN_JWT_SECRET: "${ADMIN_JWT_SECRET}"
-      WEATHER_API_KEY: "${WEATHER_API_KEY}"
+      DISCORD_TOKEN: "${DISCORD_TOKEN}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
 
     # Network
     ports:
       - "127.0.0.1:8080:8080"
-      - "1455:1455"   # OpenCode OAuth callback
+      - "1455:1455"
     networks:
       - openpact-net
 
@@ -314,133 +250,66 @@ services:
       retries: 3
       start_period: 10s
 
-    # Restart policy
     restart: unless-stopped
 
 networks:
   openpact-net:
     driver: bridge
-
-volumes:
-  openpact-data:
 ```
 
-## Health Checks
+## Verification
 
-### Container Health Check
-
-```yaml
-healthcheck:
-  test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
-  interval: 30s
-  timeout: 10s
-  retries: 3
-  start_period: 10s
-```
-
-### Orchestrator Integration
-
-Kubernetes example:
-
-```yaml
-# kubernetes deployment
-spec:
-  containers:
-    - name: openpact
-      livenessProbe:
-        httpGet:
-          path: /health
-          port: 8080
-        initialDelaySeconds: 10
-        periodSeconds: 30
-      readinessProbe:
-        httpGet:
-          path: /ready
-          port: 8080
-        initialDelaySeconds: 5
-        periodSeconds: 10
-```
-
-## Logging and Monitoring
-
-### Log Output
-
-Configure JSON logging for container environments:
-
-```yaml
-# openpact.yaml
-logging:
-  format: json
-  level: info
-  output: stdout
-```
-
-### Log Collection
-
-```yaml
-# docker-compose.yml
-services:
-  openpact:
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-```
-
-## Backup and Recovery
-
-### Data Backup
+### Check Process Users
 
 ```bash
-# Backup data volume
-docker run --rm -v openpact-data:/data -v $(pwd):/backup alpine \
-  tar czf /backup/openpact-data-backup.tar.gz /data
+# Verify AI runs as openpact-ai
+docker exec <container> ps aux | grep opencode
+# Expected: openpact-ai ... opencode serve --port ...
 
-# Restore data volume
-docker run --rm -v openpact-data:/data -v $(pwd):/backup alpine \
-  tar xzf /backup/openpact-data-backup.tar.gz -C /
+# Verify orchestrator runs as openpact-system
+docker exec <container> ps aux | grep openpact
+# Expected: openpact-+ ... /app/openpact start
 ```
 
-### Configuration Backup
-
-Keep configuration in version control (without secrets):
+### Check File Permissions
 
 ```bash
-# .gitignore
-.env
-*.secret
-openpact-data-backup.tar.gz
+docker exec <container> ls -la /workspace/
+# data/ should be drwx------ (700)
+# memory/ should be drwxrwx--- (770)
+# config.yaml should be -rw------- (600)
+# MEMORY.md should be -rw-rw---- (660)
+```
+
+### Check Environment Isolation
+
+```bash
+# From the AI, if bash were available (it's disabled):
+# echo $DISCORD_TOKEN -> empty
+# echo $ANTHROPIC_API_KEY -> would show key (needed for LLM calls)
 ```
 
 ## Security Checklist
 
 ### Build Time
 
-- [ ] Use official base image (alpine, distroless)
-- [ ] Create non-root user
+- [ ] Use official base image
+- [ ] Create both non-root users
+- [ ] Build mcp-server binary alongside main binary
 - [ ] Remove unnecessary packages
-- [ ] Scan image for vulnerabilities
 
 ### Runtime
 
-- [ ] Run as non-root user
-- [ ] Use read-only root filesystem
-- [ ] Drop all capabilities
-- [ ] Disable privilege escalation
-- [ ] Set resource limits
-- [ ] Use Docker secrets for sensitive data
-
-### Network
-
-- [ ] Expose only necessary ports
-- [ ] Bind to localhost when possible
-- [ ] Use custom networks
-- [ ] Consider network policies
+- [ ] Entrypoint sets correct file permissions
+- [ ] `run_as_user` set to `openpact-ai` in config
+- [ ] `mcp_binary` points to `/app/mcp-server`
+- [ ] Read-only root filesystem (recommended)
+- [ ] Capabilities dropped
+- [ ] Resource limits set
 
 ### Monitoring
 
-- [ ] Enable health checks
-- [ ] Configure logging
-- [ ] Set up alerts
-- [ ] Regular security scans
+- [ ] Health checks enabled
+- [ ] Logging configured
+- [ ] Process user verified (ps aux)
+- [ ] File permissions verified

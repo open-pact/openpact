@@ -51,20 +51,21 @@ OpenPact protects against several threat categories:
 **Threat:** An attacker or malicious AI attempts to extract API keys, tokens, or other credentials.
 
 **Mitigations:**
-- Secrets are never exposed to the AI
-- Automatic redaction of secret values in all output
-- Secrets stored encrypted at rest
-- Environment variable isolation in Docker
+- Environment variable filtering: only LLM provider keys are passed to the AI process
+- Sensitive tokens (DISCORD_TOKEN, GITHUB_TOKEN, etc.) are excluded from the AI's environment
+- Automatic redaction of secret values in all script output
+- Secrets stored in the data directory, which is owner-only (mode 700) and inaccessible to the AI user
 
 ### Privilege Escalation
 
 **Threat:** A compromised component attempts to gain additional access or capabilities.
 
 **Mitigations:**
-- Container runs as non-root user by default
-- Two-user model separates admin and runtime processes
-- MCP tools have explicit capability boundaries
-- Network isolation limits lateral movement
+- Two-user model: `openpact-system` (orchestrator) and `openpact-ai` (AI engine)
+- AI process runs as `openpact-ai` with restricted file permissions
+- OpenCode's built-in tools (bash, write, edit, read, etc.) are disabled via configuration
+- AI can only interact with the system through registered MCP tools
+- Linux file permissions enforce access boundaries independent of application logic
 
 ### Denial of Service
 
@@ -89,106 +90,60 @@ OpenPact protects against several threat categories:
 ## Defense in Depth Architecture
 
 ```
+Layer 1: Linux User Separation
 ┌─────────────────────────────────────────────────────────────────┐
-│                        External Boundary                         │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │ Reverse Proxy (nginx/Caddy)                                 ││
-│  │ - TLS termination                                           ││
-│  │ - Rate limiting                                              ││
-│  │ - IP filtering                                               ││
-│  └─────────────────────────────────────────────────────────────┘│
+│  openpact-system (orchestrator, admin UI, secrets)              │
+│  openpact-ai (AI engine, MCP tools only)                       │
+│  File permissions enforce boundary: data dir 700, workspace 750│
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+
+Layer 2: Application-Level Tool Restriction
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Application Boundary                        │
-│  ┌──────────────────────┐  ┌──────────────────────────────────┐│
-│  │    Admin UI Auth     │  │         MCP Protocol             ││
-│  │ - JWT validation     │  │ - Stdio transport (local only)   ││
-│  │ - Session management │  │ - Tool capability checks         ││
-│  │ - CSRF protection    │  │ - Request validation             ││
-│  └──────────────────────┘  └──────────────────────────────────┘│
+│  OpenCode built-in tools disabled (bash, write, edit, etc.)    │
+│  MCP server provides controlled tool access                     │
+│  Environment variable allowlist (no secrets leaked)             │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+
+Layer 3: Script Sandboxing
 ┌─────────────────────────────────────────────────────────────────┐
-│                       Script Boundary                            │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                   Approval Workflow                         ││
-│  │ - Human review required                                     ││
-│  │ - Hash verification                                         ││
-│  │ - Allowlist for trusted scripts                             ││
-│  └─────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                   Starlark Sandbox                          ││
-│  │ - No filesystem access                                      ││
-│  │ - No system command execution                               ││
-│  │ - HTTP/HTTPS only networking                                ││
-│  │ - Execution time limits                                     ││
-│  └─────────────────────────────────────────────────────────────┘│
+│  Starlark sandbox: no filesystem, no system commands            │
+│  Script approval workflow: human review required                │
+│  Secret redaction: values replaced with [REDACTED] in output   │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+
+Layer 4: Container Isolation
 ┌─────────────────────────────────────────────────────────────────┐
-│                       Secret Boundary                            │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                   Secret Management                         ││
-│  │ - Encrypted at rest                                         ││
-│  │ - Never returned via API                                    ││
-│  │ - Automatic output redaction                                ││
-│  │ - Script-only access                                        ││
-│  └─────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Container Boundary                          │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                   Docker Isolation                          ││
-│  │ - Non-root execution                                        ││
-│  │ - Read-only root filesystem                                 ││
-│  │ - Dropped capabilities                                      ││
-│  │ - Resource limits                                           ││
-│  └─────────────────────────────────────────────────────────────┘│
+│  Docker isolation, non-root execution                           │
+│  Entrypoint sets file permissions before dropping privileges    │
+│  Optional: read-only root filesystem, dropped capabilities     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Security Layers Explained
 
-### Layer 1: Network Boundary
+### Layer 1: Linux User Separation
 
-**Purpose:** Protect against unauthorized network access.
-
-| Control | Description |
-|---------|-------------|
-| TLS encryption | All traffic encrypted in transit |
-| Reverse proxy | Hide internal architecture |
-| Rate limiting | Prevent brute force attacks |
-| IP filtering | Restrict access to known networks |
-
-### Layer 2: Authentication
-
-**Purpose:** Verify identity of administrators.
+**Purpose:** Enforce access boundaries at the OS level.
 
 | Control | Description |
 |---------|-------------|
-| JWT tokens | Cryptographically signed sessions |
-| Password policy | Strong password requirements |
-| Session management | Short-lived access tokens |
-| Secure cookies | HTTP-only, SameSite strict |
+| Two-user model | `openpact-system` owns secrets/config, `openpact-ai` runs the AI |
+| File permissions | Data dir (700), workspace (750), memory (770), config (600) |
+| SysProcAttr | AI process spawned with `openpact-ai` UID/GID via syscall |
+| Group membership | Both users in `openpact` group for controlled shared access |
 
-### Layer 3: Authorization
+### Layer 2: Application Tool Restriction
 
-**Purpose:** Ensure components only access permitted resources.
+**Purpose:** Ensure the AI can only use explicitly registered MCP tools.
 
 | Control | Description |
 |---------|-------------|
-| Script approval | Human review before execution |
-| Hash verification | Detect unauthorized modifications |
-| MCP tool boundaries | Explicit capability limits |
-| Secret scoping | Per-script secret access |
+| Disabled built-in tools | bash, write, edit, read, grep, glob, list, patch all disabled |
+| MCP-only access | AI interacts with system exclusively through MCP tool calls |
+| Environment filtering | Only PATH, HOME, LANG, TZ, TMPDIR, XDG_*, and LLM keys passed |
+| OpenCode config | Tool restrictions enforced via OPENCODE_CONFIG_CONTENT |
 
-### Layer 4: Sandboxing
+### Layer 3: Script Sandboxing
 
 **Purpose:** Contain execution of untrusted code.
 
@@ -196,19 +151,19 @@ OpenPact protects against several threat categories:
 |---------|-------------|
 | Starlark sandbox | No system access from scripts |
 | Execution limits | Timeout and memory caps |
-| Network restrictions | HTTP/HTTPS only |
-| Output sanitization | Redact sensitive data |
+| Script approval | Human review before execution |
+| Output sanitization | Redact sensitive data in results |
 
-### Layer 5: Infrastructure
+### Layer 4: Container Isolation
 
 **Purpose:** Secure the runtime environment.
 
 | Control | Description |
 |---------|-------------|
-| Container isolation | Docker/OCI boundaries |
-| Non-root execution | Minimum privileges |
-| Read-only filesystem | Prevent tampering |
-| Resource limits | CPU/memory quotas |
+| Docker isolation | Container boundaries |
+| Non-root execution | Both users are non-root |
+| Entrypoint permissions | File permissions set at container start |
+| Resource limits | CPU/memory quotas via Docker |
 
 ## Security Checklist
 
@@ -216,7 +171,7 @@ OpenPact protects against several threat categories:
 
 - [ ] Configure TLS (use reverse proxy or native HTTPS)
 - [ ] Set strong admin password
-- [ ] Review default configuration
+- [ ] Review default configuration (especially `run_as_user` and `mcp_binary`)
 - [ ] Set up monitoring and alerting
 - [ ] Configure IP allowlisting if possible
 
@@ -234,19 +189,6 @@ OpenPact protects against several threat categories:
 - [ ] Have a process to disable compromised scripts
 - [ ] Maintain backups of configuration
 - [ ] Document escalation procedures
-
-## Comparison with Alternatives
-
-| Feature | OpenPact | Direct API Access | Custom Solutions |
-|---------|----------|-------------------|------------------|
-| AI sandboxing | Built-in | None | Manual |
-| Secret redaction | Automatic | None | Manual |
-| Script approval | Required | N/A | Optional |
-| Execution limits | Enforced | None | Optional |
-| Container isolation | Default | N/A | Optional |
-| Authentication | Built-in | N/A | Manual |
-
-OpenPact provides a complete security framework out of the box, whereas alternative approaches require significant additional development.
 
 ## Next Steps
 

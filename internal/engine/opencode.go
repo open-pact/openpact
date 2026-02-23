@@ -11,7 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -57,11 +61,30 @@ func (o *OpenCode) Start(ctx context.Context) error {
 	// Build command
 	args := []string{"serve", "--port", fmt.Sprintf("%d", port), "--hostname", "127.0.0.1"}
 	cmd := exec.CommandContext(ctx, "opencode", args...)
-	cmd.Env = os.Environ()
+
+	// Build filtered environment (security: only allowlisted vars)
+	cmd.Env = buildFilteredEnv(o.cfg)
 
 	// Set password if configured
 	if o.cfg.Password != "" {
 		cmd.Env = append(cmd.Env, "OPENCODE_SERVER_PASSWORD="+o.cfg.Password)
+	}
+
+	// Generate OpenCode config to disable built-in tools and configure MCP
+	ocConfig := buildOpenCodeConfig(o.cfg)
+	if len(ocConfig) > 0 {
+		configJSON, err := json.Marshal(ocConfig)
+		if err != nil {
+			return fmt.Errorf("failed to marshal opencode config: %w", err)
+		}
+		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+string(configJSON))
+	}
+
+	// Run as restricted user if configured (Linux user separation)
+	if o.cfg.RunAsUser != "" {
+		if err := setSysProcCredential(cmd, o.cfg.RunAsUser); err != nil {
+			log.Printf("Warning: failed to set run_as_user %q: %v (running as current user)", o.cfg.RunAsUser, err)
+		}
 	}
 
 	if o.cfg.WorkDir != "" {
@@ -596,6 +619,122 @@ func findFreePort() (int, error) {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+// buildFilteredEnv creates an allowlisted environment for the OpenCode process.
+// Only system basics, XDG_ variables, and LLM provider keys are passed through.
+// Sensitive tokens (DISCORD_TOKEN, GITHUB_TOKEN, etc.) are excluded.
+func buildFilteredEnv(cfg Config) []string {
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "USER": true,
+		"LANG": true, "TERM": true, "TZ": true, "TMPDIR": true,
+	}
+
+	providerKeys := map[string]bool{
+		"ANTHROPIC_API_KEY":    true,
+		"OPENAI_API_KEY":      true,
+		"GOOGLE_API_KEY":      true,
+		"AZURE_OPENAI_API_KEY": true,
+		"OLLAMA_HOST":         true,
+	}
+
+	var env []string
+	for _, e := range os.Environ() {
+		key := strings.SplitN(e, "=", 2)[0]
+		if allowed[key] || providerKeys[key] || strings.HasPrefix(key, "XDG_") {
+			env = append(env, e)
+		}
+	}
+
+	// Override HOME and USER for the AI user
+	if cfg.RunAsUser != "" {
+		if u, err := user.Lookup(cfg.RunAsUser); err == nil {
+			env = filterEnvKey(env, "HOME")
+			env = append(env, "HOME="+u.HomeDir)
+			env = filterEnvKey(env, "USER")
+			env = append(env, "USER="+cfg.RunAsUser)
+		}
+	}
+
+	return env
+}
+
+// filterEnvKey removes all entries with the given key from an env slice.
+func filterEnvKey(env []string, key string) []string {
+	prefix := key + "="
+	result := env[:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// buildOpenCodeConfig generates the OpenCode configuration that disables built-in
+// tools and configures our MCP server. Passed via OPENCODE_CONFIG_CONTENT env var.
+func buildOpenCodeConfig(cfg Config) map[string]interface{} {
+	config := map[string]interface{}{
+		// Disable ALL built-in filesystem/shell tools
+		"tools": map[string]bool{
+			"bash": false, "write": false, "edit": false, "read": false,
+			"grep": false, "glob": false, "list": false, "patch": false,
+			"webfetch": false, "websearch": false,
+		},
+		// Auto-allow our MCP tools
+		"permission": map[string]string{
+			"openpact_*": "allow",
+		},
+	}
+
+	// Configure our MCP server if binary is specified
+	if cfg.MCPBinary != "" {
+		mcpEnv := map[string]string{
+			"OPENPACT_WORKSPACE_PATH": cfg.WorkDir,
+			"OPENPACT_DATA_DIR":       cfg.DataDir,
+		}
+		for k, v := range cfg.MCPEnv {
+			mcpEnv[k] = v
+		}
+
+		config["mcp"] = map[string]interface{}{
+			"openpact": map[string]interface{}{
+				"type":        "local",
+				"command":     []string{cfg.MCPBinary},
+				"environment": mcpEnv,
+				"enabled":     true,
+			},
+		}
+	}
+
+	return config
+}
+
+// setSysProcCredential configures the command to run as a different Linux user.
+func setSysProcCredential(cmd *exec.Cmd, username string) error {
+	aiUser, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("user %q not found: %w", username, err)
+	}
+
+	uid, err := strconv.Atoi(aiUser.Uid)
+	if err != nil {
+		return fmt.Errorf("invalid uid %q: %w", aiUser.Uid, err)
+	}
+
+	gid, err := strconv.Atoi(aiUser.Gid)
+	if err != nil {
+		return fmt.Errorf("invalid gid %q: %w", aiUser.Gid, err)
+	}
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{
+			Uid: uint32(uid),
+			Gid: uint32(gid),
+		},
+	}
+
+	return nil
 }
 
 // logWriter writes lines to log with a prefix.

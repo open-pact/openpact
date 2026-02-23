@@ -19,6 +19,7 @@ RUN go mod download || true
 COPY . .
 COPY --from=ui-builder /ui/dist/ ./admin-ui/dist/
 RUN CGO_ENABLED=0 GOOS=linux go build -o openpact ./cmd/openpact
+RUN CGO_ENABLED=0 GOOS=linux go build -o mcp-server ./cmd/mcp-server
 
 # ---
 
@@ -49,9 +50,10 @@ RUN mkdir -p /app /workspace /workspace/memory /workspace/skills /run/mcp && \
     chmod 750 /app /workspace && \
     chmod 770 /run/mcp
 
-# Copy binary
+# Copy binaries
 COPY --from=builder /build/openpact /app/openpact
-RUN chmod 755 /app/openpact
+COPY --from=builder /build/mcp-server /app/mcp-server
+RUN chmod 755 /app/openpact /app/mcp-server
 
 # Copy default templates
 COPY templates/ /app/templates/
@@ -63,6 +65,10 @@ RUN chown -R openpact-system:openpact /app/templates
 # Create home directory structure (entrypoint symlinks opencode creds into workspace)
 RUN mkdir -p /home/openpact-system/.local/share && \
     chown -R openpact-system:openpact /home/openpact-system
+
+# Create home for AI user (OpenCode runs as this user)
+RUN mkdir -p /home/openpact-ai/.local/share && \
+    chown -R openpact-ai:openpact /home/openpact-ai
 
 ENV HOME=/home/openpact-system
 ENV WORKSPACE_PATH=/workspace
