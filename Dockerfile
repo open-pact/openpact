@@ -45,11 +45,13 @@ RUN addgroup --system openpact && \
     adduser --system --ingroup openpact openpact-ai
 
 # Create directories with correct permissions
-RUN mkdir -p /app /workspace /workspace/secure/data /workspace/ai-data/memory /workspace/ai-data/skills /workspace/ai-data/scripts /run/mcp && \
+RUN mkdir -p /app /workspace /workspace/secure/data /workspace/engine /workspace/ai-data/memory /workspace/ai-data/skills /workspace/ai-data/scripts /run/mcp && \
     chown -R openpact-system:openpact /app /workspace /run/mcp && \
+    chown -R openpact-ai:openpact /workspace/engine && \
     chmod 750 /app /workspace && \
     chmod 700 /workspace/secure && \
     chmod 700 /workspace/secure/data && \
+    chmod 770 /workspace/engine && \
     chmod 775 /workspace/ai-data && \
     chmod 770 /run/mcp
 
@@ -74,7 +76,6 @@ RUN mkdir -p /home/openpact-ai/.local/share && \
     chown -R openpact-ai:openpact /home/openpact-ai
 
 ENV HOME=/home/openpact-system
-ENV WORKSPACE_PATH=/workspace
 
 WORKDIR /workspace
 VOLUME /workspace

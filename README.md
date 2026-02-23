@@ -269,12 +269,20 @@ openpact/
 # 1. Copy the sample env file and fill in your values
 cp .env.sample .env
 
-# 2. Build and start
+# 2. Create your workspace directory
+mkdir -p ~/.config/openpact/workspace
+
+# 3. Set HOST_WORKSPACE_PATH in .env to point to it
+#    HOST_WORKSPACE_PATH=~/.config/openpact/workspace
+
+# 4. Build and start
 docker compose up --build
 
-# 3. Rebuild after code changes
+# 5. Rebuild after code changes
 docker compose up --build -d
 ```
+
+The workspace directory is mounted into the container at `/workspace`. Each developer sets their own `HOST_WORKSPACE_PATH` in `.env` — this must be outside the project directory.
 
 The admin UI will be available at `http://localhost:8080` and health/metrics at `http://localhost:8081`.
 

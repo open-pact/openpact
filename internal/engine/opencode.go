@@ -30,8 +30,17 @@ type OpenCode struct {
 	mu           sync.Mutex
 }
 
+const defaultAIUser = "openpact-ai"
+
 // NewOpenCode creates a new OpenCode engine
 func NewOpenCode(cfg Config) (*OpenCode, error) {
+	// Default RunAsUser to the standard AI user if it exists on the system
+	if cfg.RunAsUser == "" {
+		if _, err := user.Lookup(defaultAIUser); err == nil {
+			cfg.RunAsUser = defaultAIUser
+		}
+	}
+
 	return &OpenCode{
 		cfg: cfg,
 		client: &http.Client{

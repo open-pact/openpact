@@ -9,5 +9,5 @@ services:
       - "8081:8081"   # Health / Prometheus metrics
       - "1455:1455"   # OpenCode OAuth callback
     volumes:
-      - ./workspace:/workspace
+      - ${HOST_WORKSPACE_PATH}:/workspace
     restart: unless-stopped

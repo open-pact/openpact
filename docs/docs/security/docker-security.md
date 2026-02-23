@@ -77,13 +77,14 @@ Container Filesystem
 │   └── templates/           # Default config/context templates
 ├── /home/
 │   ├── openpact-system/     # System user home
-│   │   └── .local/share/opencode -> /workspace/secure/data/opencode
+│   │   └── .local/share/opencode -> /workspace/engine
 │   └── openpact-ai/         # AI user home
-│       └── .local/share/opencode -> /workspace/secure/data/opencode
+│       └── .local/share/opencode -> /workspace/engine
 └── /workspace/              # Bind-mounted workspace volume
-    ├── secure/              # SYSTEM-ONLY — AI has ZERO access
+    ├── secure/              # SYSTEM-ONLY — AI has ZERO access (700)
     │   ├── config.yaml      # Configuration (owner-only)
     │   └── data/            # Secrets, JWT key, approvals (owner-only)
+    ├── engine/              # ENGINE data — OpenCode auth & sessions (770)
     └── ai-data/             # AI-ACCESSIBLE — MCP tools scope here
         ├── SOUL.md          # AI persona (group-readable)
         ├── USER.md          # User profile (group-readable)

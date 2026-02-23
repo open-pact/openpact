@@ -5,6 +5,7 @@
 #
 # Directory structure:
 #   /workspace/secure/       — SYSTEM-ONLY (config, secrets, system data)
+#   /workspace/engine/       — ENGINE data (OpenCode auth, sessions — AI user needs access)
 #   /workspace/ai-data/      — AI-ACCESSIBLE (context files, memory, scripts, skills)
 #
 # Both users are in the 'openpact' group. File permissions use group
@@ -15,11 +16,17 @@ chown openpact-system:openpact /workspace
 chmod 755 /workspace
 
 # Create secure area (system-only)
-mkdir -p /workspace/secure/data/opencode
+mkdir -p /workspace/secure/data
 
 chown -R openpact-system:openpact /workspace/secure
 chmod 700 /workspace/secure
 chmod 700 /workspace/secure/data
+
+# Create engine data area (AI user needs access for OpenCode auth/sessions)
+mkdir -p /workspace/engine
+
+chown -R openpact-ai:openpact /workspace/engine
+chmod 770 /workspace/engine
 
 # Create AI-accessible area (group-readable/writable for AI user)
 mkdir -p /workspace/ai-data/memory /workspace/ai-data/skills /workspace/ai-data/scripts
@@ -30,10 +37,9 @@ chmod 775 /workspace/ai-data/memory
 chmod 755 /workspace/ai-data/skills
 chmod 755 /workspace/ai-data/scripts
 
-# Symlink OpenCode creds into the workspace so they persist via the bind-mounted volume.
-# Both system and AI user need their own symlink for auth state.
-ln -sfn /workspace/secure/data/opencode /home/openpact-system/.local/share/opencode
-ln -sfn /workspace/secure/data/opencode /home/openpact-ai/.local/share/opencode
+# Symlink OpenCode data dir so auth state persists via the bind-mounted volume.
+ln -sfn /workspace/engine /home/openpact-system/.local/share/opencode
+ln -sfn /workspace/engine /home/openpact-ai/.local/share/opencode
 
 # Copy default config if none exists
 if [ ! -f /workspace/secure/config.yaml ]; then
