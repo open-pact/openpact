@@ -18,11 +18,11 @@ import (
 	"github.com/open-pact/openpact/internal/chat"
 	"github.com/open-pact/openpact/internal/config"
 	opcontext "github.com/open-pact/openpact/internal/context"
-	"github.com/open-pact/openpact/internal/discord"
 	"github.com/open-pact/openpact/internal/engine"
 	"github.com/open-pact/openpact/internal/mcp"
-	"github.com/open-pact/openpact/internal/slack"
-	"github.com/open-pact/openpact/internal/telegram"
+	"github.com/open-pact/openpact/internal/providers/discord"
+	"github.com/open-pact/openpact/internal/providers/slack"
+	"github.com/open-pact/openpact/internal/providers/telegram"
 )
 
 // Orchestrator coordinates all OpenPact components

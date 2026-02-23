@@ -8,10 +8,10 @@ build:
 test:
 	go test -v ./...
 
-# Run tests with coverage
+# Run tests with coverage (excludes chat providers which require external services)
 coverage:
-	go test -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
+	go test -coverprofile=coverage.out $(shell go list ./... | grep -v /internal/providers/)
+	go tool cover -func coverage.out
 
 # Clean build artifacts
 clean:

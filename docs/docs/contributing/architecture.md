@@ -166,7 +166,7 @@ Supports:
 
 Defines the generic `chat.Provider` interface that all messaging platforms implement. Includes `MessageHandler` and `CommandHandler` callback types.
 
-### internal/discord
+### internal/providers/discord
 
 Discord bot integration (implements `chat.Provider`):
 
@@ -175,7 +175,7 @@ Discord bot integration (implements `chat.Provider`):
 - Slash commands (`/new`, `/sessions`, `/switch`) for session management
 - Channel and user allowlisting
 
-### internal/telegram
+### internal/providers/telegram
 
 Telegram bot integration (implements `chat.Provider`):
 
@@ -184,7 +184,7 @@ Telegram bot integration (implements `chat.Provider`):
 - 4096-character message splitting
 - User allowlisting by ID or username
 
-### internal/slack
+### internal/providers/slack
 
 Slack bot integration (implements `chat.Provider`):
 
