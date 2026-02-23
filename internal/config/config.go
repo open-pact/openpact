@@ -84,22 +84,36 @@ type WorkspaceConfig struct {
 	Path string `yaml:"path"` // Base workspace path
 }
 
-// ScriptsDir returns the path to the scripts directory within the workspace.
-func (w WorkspaceConfig) ScriptsDir() string {
-	return filepath.Join(w.Path, "scripts")
+// SecureDir returns the path to the secure directory (system-only, AI has zero access).
+func (w WorkspaceConfig) SecureDir() string {
+	return filepath.Join(w.Path, "secure")
 }
 
-// DataDir returns the path to the data directory within the workspace.
+// AIDataDir returns the path to the AI-accessible data directory.
+func (w WorkspaceConfig) AIDataDir() string {
+	return filepath.Join(w.Path, "ai-data")
+}
+
+// DataDir returns the path to the system data directory within the secure area.
 func (w WorkspaceConfig) DataDir() string {
-	return filepath.Join(w.Path, "data")
+	return filepath.Join(w.Path, "secure", "data")
 }
 
-// EnsureDirs creates the workspace, data, and scripts directories if they don't exist.
+// ScriptsDir returns the path to the scripts directory within the AI-accessible area.
+func (w WorkspaceConfig) ScriptsDir() string {
+	return filepath.Join(w.Path, "ai-data", "scripts")
+}
+
+// EnsureDirs creates all required workspace directories if they don't exist.
 func (w WorkspaceConfig) EnsureDirs() error {
 	dirs := []string{
 		w.Path,
+		w.SecureDir(),
 		w.DataDir(),
+		w.AIDataDir(),
 		w.ScriptsDir(),
+		filepath.Join(w.AIDataDir(), "memory"),
+		filepath.Join(w.AIDataDir(), "skills"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -195,7 +209,7 @@ func Load() (*Config, error) {
 	// Try to load from file
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
-		configPath = filepath.Join(cfg.Workspace.Path, "config.yaml")
+		configPath = filepath.Join(cfg.Workspace.Path, "secure", "config.yaml")
 	}
 
 	if data, err := os.ReadFile(configPath); err == nil {

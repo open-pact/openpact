@@ -14,15 +14,16 @@ The memory system consists of two components:
 1. **Long-term Memory (MEMORY.md)**: Persistent facts, preferences, and important information
 2. **Daily Memory Files (memory/YYYY-MM-DD.md)**: Day-specific notes and context
 
-Both are stored in the workspace and automatically loaded into the AI's context.
+Both are stored in the `ai-data/` subdirectory within the workspace and automatically loaded into the AI's context.
 
 ```
 workspace/
-├── MEMORY.md              # Long-term memory
-└── memory/
-    ├── 2024-01-15.md      # Daily memory
-    ├── 2024-01-16.md
-    └── 2024-01-17.md
+└── ai-data/
+    ├── MEMORY.md              # Long-term memory
+    └── memory/
+        ├── 2024-01-15.md      # Daily memory
+        ├── 2024-01-16.md
+        └── 2024-01-17.md
 ```
 
 ### Context Loading
@@ -80,7 +81,7 @@ This gives the AI context about you and recent events without you having to repe
 
 ## Daily Memory Files
 
-Daily memory files (stored in `memory/YYYY-MM-DD.md`) capture day-specific information.
+Daily memory files (stored in `ai-data/memory/YYYY-MM-DD.md`) capture day-specific information.
 
 ### Automatic vs Manual
 
@@ -299,9 +300,9 @@ Memory behavior can be configured in `openpact.yaml`:
 workspace:
   path: /workspace
 
-# Memory files are stored within the workspace
-# MEMORY.md at workspace root
-# Daily files in workspace/memory/
+# Memory files are stored within the ai-data/ subdirectory
+# MEMORY.md at workspace/ai-data/MEMORY.md
+# Daily files in workspace/ai-data/memory/
 ```
 
 ## Troubleshooting
@@ -328,7 +329,7 @@ If today's context seems missing:
 
 1. Check that the daily memory file exists
 2. Verify the date format: `YYYY-MM-DD.md`
-3. Ensure the file is in the `memory/` directory
+3. Ensure the file is in the `ai-data/memory/` directory
 
 ## Related Documentation
 

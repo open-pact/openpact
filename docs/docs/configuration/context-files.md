@@ -15,7 +15,7 @@ OpenPact uses special markdown files to shape the AI's behavior, personality, an
 | `USER.md` | User preferences and context | Read only |
 | `MEMORY.md` | Persistent notes and memory | Read and write |
 
-All context files are stored in the workspace directory (default: `/workspace`).
+All context files are stored in the `ai-data/` subdirectory within the workspace (default: `/workspace/ai-data/`).
 
 ## SOUL.md
 
@@ -24,7 +24,7 @@ The `SOUL.md` file defines the AI's core identity, personality, and behavioral g
 ### Location
 
 ```
-/workspace/SOUL.md
+/workspace/ai-data/SOUL.md
 ```
 
 ### Example
@@ -84,7 +84,7 @@ The `USER.md` file contains information about you - the user. This helps the AI 
 ### Location
 
 ```
-/workspace/USER.md
+/workspace/ai-data/USER.md
 ```
 
 ### Example
@@ -155,7 +155,7 @@ The `MEMORY.md` file is the AI's persistent memory. Unlike SOUL.md and USER.md, 
 ### Location
 
 ```
-/workspace/MEMORY.md
+/workspace/ai-data/MEMORY.md
 ```
 
 ### Example
@@ -219,7 +219,7 @@ In addition to `MEMORY.md`, OpenPact supports daily memory files for ephemeral n
 ### Location
 
 ```
-/workspace/memory/YYYY-MM-DD.md
+/workspace/ai-data/memory/YYYY-MM-DD.md
 ```
 
 ### Purpose
@@ -278,12 +278,12 @@ Create files directly in your workspace:
 
 ```bash
 # Docker - copy files into container
-docker cp SOUL.md openpact:/workspace/SOUL.md
+docker cp SOUL.md openpact:/workspace/ai-data/SOUL.md
 
 # Docker Compose - mount from host
 volumes:
-  - ./context/SOUL.md:/workspace/SOUL.md:ro
-  - ./context/USER.md:/workspace/USER.md:ro
+  - ./context/SOUL.md:/workspace/ai-data/SOUL.md:ro
+  - ./context/USER.md:/workspace/ai-data/USER.md:ro
   - ./workspace:/workspace
 ```
 
@@ -312,7 +312,7 @@ Context files are loaded at conversation start. For changes to take effect:
 ### File Not Found
 
 Check:
-1. File is in the correct location (`/workspace/`)
+1. File is in the correct location (`/workspace/ai-data/`)
 2. File name is correct (case-sensitive)
 3. File has `.md` extension
 4. Container has read access

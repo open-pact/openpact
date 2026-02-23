@@ -20,12 +20,11 @@ workspace:
 |-------|------|---------|-------------|
 | `path` | string | `./workspace` | Path to the workspace directory |
 
-The workspace is where OpenPact stores:
-- Context files (SOUL.md, USER.md, MEMORY.md)
-- Memory files
-- Starlark scripts (in `scripts/` subdirectory)
-- Admin data (users, approvals) (in `data/` subdirectory)
-- Any files the AI creates or modifies
+The workspace is the top-level directory containing two subdirectories:
+- `secure/` — System-only: configuration (`secure/config.yaml`) and admin data (`secure/data/` — users, approvals, secrets)
+- `ai-data/` — AI-accessible: context files (SOUL.md, USER.md, MEMORY.md), memory files, Starlark scripts (`scripts/`), skills (`skills/`), and any files the AI creates or modifies
+
+All paths are derived from `WORKSPACE_PATH`. The config file itself lives at `secure/config.yaml` within the workspace.
 
 ## discord
 
@@ -173,7 +172,7 @@ starlark:
 | `max_execution_ms` | integer | `30000` | Maximum script execution time (ms) |
 | `secrets` | map | `{}` | Secrets available to scripts |
 
-Scripts are always stored in the `scripts/` subdirectory of the workspace.
+Scripts are always stored in the `ai-data/scripts/` subdirectory of the workspace.
 
 ### Secrets Configuration
 

@@ -108,6 +108,27 @@ starlark:
 Values from `secrets.get()` are automatically redacted from all output. The AI never sees the actual secret values - only `[REDACTED:KEY_NAME]`.
 :::
 
+## Workspace Path
+
+### WORKSPACE_PATH
+
+The root workspace directory. All internal paths are derived from this:
+
+```bash
+WORKSPACE_PATH=/workspace  # default in Docker
+```
+
+| Derived Path | Description |
+|-------------|-------------|
+| `$WORKSPACE_PATH/secure/config.yaml` | Configuration file |
+| `$WORKSPACE_PATH/secure/data/` | Admin data (secrets, users, approvals) |
+| `$WORKSPACE_PATH/ai-data/` | AI-accessible files (MCP tools scope here) |
+| `$WORKSPACE_PATH/ai-data/memory/` | Daily memory files |
+| `$WORKSPACE_PATH/ai-data/scripts/` | Starlark scripts |
+| `$WORKSPACE_PATH/ai-data/skills/` | Skill definitions |
+
+There is no separate `OPENPACT_DATA_DIR` variable -- all paths are derived from `WORKSPACE_PATH`.
+
 ## Runtime Configuration
 
 These variables override corresponding YAML configuration values.

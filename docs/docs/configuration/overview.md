@@ -25,8 +25,8 @@ The primary configuration is stored in a YAML file, typically named `openpact.ya
 By default, OpenPact looks for configuration in:
 
 1. Path specified by `--config` flag
-2. `./openpact.yaml` (current directory)
-3. `/config/openpact.yaml` (Docker default)
+2. `<WORKSPACE_PATH>/secure/config.yaml` (derived from `WORKSPACE_PATH` environment variable)
+3. `./openpact.yaml` (current directory, for development)
 
 ### Minimal Example
 

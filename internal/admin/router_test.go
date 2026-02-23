@@ -17,6 +17,7 @@ func setupTestServer(t *testing.T) *Server {
 		DataDir:       tmpDir,
 		ScriptsDir:    tmpDir + "/scripts",
 		WorkspacePath: tmpDir,
+		AIDataDir:     tmpDir,
 		DevMode:       true,
 		AccessExpiry:  DefaultConfig().AccessExpiry,
 		RefreshExpiry: DefaultConfig().RefreshExpiry,
@@ -144,7 +145,7 @@ func TestServer_SetupFlow_ProfileStep(t *testing.T) {
 		t.Errorf("Expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	soulData, err := os.ReadFile(filepath.Join(server.config.WorkspacePath, "SOUL.md"))
+	soulData, err := os.ReadFile(filepath.Join(server.config.AIDataDir, "SOUL.md"))
 	if err != nil {
 		t.Fatalf("SOUL.md should exist: %v", err)
 	}

@@ -12,7 +12,7 @@ The Admin UI provides a secure interface for managing secrets (API keys, tokens,
 
 Secrets in OpenPact are:
 
-- **Stored securely** - Encrypted at rest in the data directory
+- **Stored securely** - Encrypted at rest in the `secure/data/` directory
 - **Never exposed** - Values are never returned via API or shown in the UI
 - **Automatically redacted** - If a secret appears in script output, it's replaced with `[REDACTED:SECRET_NAME]`
 - **Scoped to scripts** - Only available to Starlark scripts, not directly to the AI
@@ -258,17 +258,19 @@ print("Using secret: WEATHER_API_KEY")
 
 ### 6. Secure the Data Directory
 
-The secrets file is stored in the data directory:
+The secrets file is stored in the `secure/data/` directory (AI has zero access):
 
 ```
-data/
-└── secrets.json    # Encrypted at rest
+secure/
+└── data/
+    └── secrets.json    # Encrypted at rest
 ```
 
 Ensure proper file permissions:
 ```bash
-chmod 600 data/secrets.json
-chmod 700 data/
+chmod 600 secure/data/secrets.json
+chmod 700 secure/data/
+chmod 700 secure/
 ```
 
 ### 7. Use Environment Variables in Production
@@ -299,7 +301,7 @@ secrets:
 
 ### File-Based Storage
 
-Secrets are stored in `data/secrets.json`:
+Secrets are stored in `secure/data/secrets.json`:
 
 ```json
 {

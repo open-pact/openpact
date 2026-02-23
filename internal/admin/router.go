@@ -15,6 +15,7 @@ type Config struct {
 	DataDir       string
 	ScriptsDir    string
 	WorkspacePath string
+	AIDataDir     string
 	Allowlist     []string
 	DevMode       bool
 	AccessExpiry  time.Duration
@@ -92,7 +93,7 @@ func NewServer(config Config) (*Server, error) {
 		users:              users,
 		scripts:            scripts,
 		jwt:                jwt,
-		setupHandler:       NewSetupHandler(users, config.DataDir, config.WorkspacePath),
+		setupHandler:       NewSetupHandler(users, config.DataDir, config.AIDataDir),
 		sessionHandler:     NewSessionHandler(users, jwt, secureCookie),
 		scriptHandlers:     NewScriptHandlers(scripts),
 		engineAuthHandlers: NewEngineAuthHandlers(engineType),

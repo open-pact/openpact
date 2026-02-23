@@ -47,7 +47,7 @@ External Services (secrets injected here)
 
 ### Workspace Tools
 
-Tools for managing files in the workspace directory.
+Tools for managing files in the `ai-data/` subdirectory within the workspace. All workspace tools are scoped to `ai-data/` -- the AI cannot access files in `secure/`.
 
 #### workspace_read
 
@@ -55,7 +55,7 @@ Read a file from the workspace.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | Yes | Relative path within workspace |
+| `path` | string | Yes | Relative path within `ai-data/` |
 
 **Example:**
 ```json
@@ -73,11 +73,11 @@ Read a file from the workspace.
 
 #### workspace_write
 
-Write content to a file in the workspace.
+Write content to a file in the `ai-data/` directory.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | Yes | Relative path within workspace |
+| `path` | string | Yes | Relative path within `ai-data/` |
 | `content` | string | Yes | Content to write |
 
 **Example:**
@@ -97,11 +97,11 @@ Write content to a file in the workspace.
 
 #### workspace_list
 
-List files in a workspace directory.
+List files in the `ai-data/` directory.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | No | Relative path (defaults to root) |
+| `path` | string | No | Relative path within `ai-data/` (defaults to `ai-data/` root) |
 
 **Example:**
 ```json
@@ -540,9 +540,9 @@ Reload scripts from disk.
 
 | Tool | Category | Description |
 |------|----------|-------------|
-| `workspace_read` | Workspace | Read files from workspace |
-| `workspace_write` | Workspace | Write files to workspace |
-| `workspace_list` | Workspace | List workspace files |
+| `workspace_read` | Workspace | Read files from `ai-data/` |
+| `workspace_write` | Workspace | Write files to `ai-data/` |
+| `workspace_list` | Workspace | List `ai-data/` files |
 | `memory_read` | Memory | Read memory files |
 | `memory_write` | Memory | Write to memory files |
 | `chat_send` | Communication | Send messages via any chat provider |

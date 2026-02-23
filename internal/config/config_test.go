@@ -139,7 +139,16 @@ func TestEnsureDirs(t *testing.T) {
 	}
 
 	// Verify all directories were created
-	for _, dir := range []string{workspace, w.DataDir(), w.ScriptsDir()} {
+	expectedDirs := []string{
+		workspace,
+		w.SecureDir(),
+		w.DataDir(),
+		w.AIDataDir(),
+		w.ScriptsDir(),
+		filepath.Join(w.AIDataDir(), "memory"),
+		filepath.Join(w.AIDataDir(), "skills"),
+	}
+	for _, dir := range expectedDirs {
 		info, err := os.Stat(dir)
 		if err != nil {
 			t.Errorf("directory %s was not created: %v", dir, err)

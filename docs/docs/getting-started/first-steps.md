@@ -141,11 +141,10 @@ DISCORD_TOKEN=your_discord_bot_token
 docker run -d \
   --name openpact \
   -v openpact-workspace:/workspace \
-  -v $(pwd)/openpact.yaml:/config/openpact.yaml:ro \
+  -v $(pwd)/openpact.yaml:/workspace/secure/config.yaml:ro \
   -e DISCORD_TOKEN=$DISCORD_TOKEN \
   -p 8080:8080 \
-  ghcr.io/open-pact/openpact:latest \
-  --config /config/openpact.yaml
+  ghcr.io/open-pact/openpact:latest
 
 # Or with Docker Compose
 docker compose up -d
@@ -181,7 +180,7 @@ If you added yourself to `allowed_users`, only you can message the bot. Remove t
 
 ### Set Up Identity (SOUL.md)
 
-Create a `SOUL.md` file in your workspace to give your AI a personality:
+Create a `SOUL.md` file in the `ai-data/` subdirectory of your workspace to give your AI a personality:
 
 ```markdown
 # Identity
@@ -198,7 +197,7 @@ You are a helpful personal assistant. You are friendly, concise, and focused on 
 
 ### Add Personal Context (USER.md)
 
-Create a `USER.md` file with information about yourself:
+Create a `USER.md` file in `ai-data/` with information about yourself:
 
 ```markdown
 # User Profile
@@ -215,7 +214,7 @@ Preferences: Prefers concise responses
 
 ### Enable Memory (MEMORY.md)
 
-Create a `MEMORY.md` file for persistent notes:
+Create a `MEMORY.md` file in `ai-data/` for persistent notes:
 
 ```markdown
 # Memory

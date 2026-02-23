@@ -5,15 +5,15 @@ sidebar_position: 3
 
 # Workspace
 
-The workspace is OpenPact's secure file storage area where your AI assistant can read, write, and manage files. All file operations are restricted to this directory, ensuring your system remains protected.
+The workspace is OpenPact's top-level directory that contains both secure system data and AI-accessible files. The AI assistant can read, write, and manage files within the `ai-data/` subdirectory, while sensitive configuration and data are isolated in the `secure/` subdirectory where the AI has zero access.
 
 ## Overview
 
 The workspace provides:
 
 - **Persistent Storage**: Files survive container restarts
-- **AI File Access**: Your assistant can manage files on your behalf
-- **Security Boundary**: Operations cannot escape the workspace directory
+- **AI File Access**: Your assistant can manage files in `ai-data/` on your behalf
+- **Security Boundary**: Sensitive config and data in `secure/` are inaccessible to the AI; MCP tools are scoped to `ai-data/` only
 - **Organized Structure**: Keep scripts, notes, and data organized
 
 ## Configuration
@@ -49,7 +49,7 @@ volumes:
 
 ## Workspace Tools
 
-OpenPact provides three MCP tools for workspace operations.
+OpenPact provides three MCP tools for workspace operations. All workspace tools are scoped to the `ai-data/` subdirectory -- the AI cannot access files in `secure/`.
 
 ### workspace_read
 
@@ -68,7 +68,7 @@ Read the contents of a file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | Yes | Relative path within workspace |
+| `path` | string | Yes | Relative path within `ai-data/` |
 
 **Returns:** File contents as a string, or an error if the file doesn't exist.
 
@@ -90,7 +90,7 @@ Write content to a file, creating directories as needed.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | Yes | Relative path within workspace |
+| `path` | string | Yes | Relative path within `ai-data/` |
 | `content` | string | Yes | Content to write to the file |
 
 **Returns:** Success confirmation or error message.
@@ -112,7 +112,7 @@ List files and directories at a path.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | No | Relative path (defaults to workspace root) |
+| `path` | string | No | Relative path within `ai-data/` (defaults to `ai-data/` root) |
 
 **Returns:** List of files and directories with metadata.
 
@@ -120,17 +120,19 @@ List files and directories at a path.
 
 OpenPact enforces strict path security to protect your system.
 
-### Restricted to Workspace
+### Restricted to ai-data/
 
-All file operations are confined to the workspace directory:
+All file operations are confined to the `ai-data/` subdirectory within the workspace:
 
 ```
 Allowed:
-  workspace/notes/todo.md          ✓
-  workspace/scripts/helper.star    ✓
-  workspace/data/report.json       ✓
+  ai-data/notes/todo.md            ✓
+  ai-data/scripts/helper.star      ✓
+  ai-data/memory/2024-01-15.md     ✓
 
 Blocked:
+  secure/config.yaml               ✗  (system-only)
+  secure/data/secrets.json         ✗  (system-only)
   /etc/passwd                      ✗
   ../../../etc/shadow              ✗
   /home/user/.ssh/id_rsa           ✗
@@ -138,7 +140,7 @@ Blocked:
 
 ### Path Traversal Prevention
 
-Attempts to escape the workspace using `..` are blocked:
+Attempts to escape `ai-data/` using `..` are blocked:
 
 ```json
 // This will fail
@@ -161,7 +163,7 @@ Paths are normalized before validation:
 
 ### Symbolic Links
 
-By default, symbolic links that point outside the workspace are not followed, preventing link-based escape attempts.
+By default, symbolic links that point outside `ai-data/` are not followed, preventing link-based escape attempts.
 
 ## Directory Structure
 
@@ -169,21 +171,29 @@ A typical workspace organization:
 
 ```
 workspace/
-├── SOUL.md              # AI identity and personality
-├── USER.md              # User preferences
-├── MEMORY.md            # Persistent memory
-├── memory/              # Daily memory files
-│   ├── 2024-01-15.md
-│   └── 2024-01-16.md
-├── scripts/             # Starlark scripts
-│   ├── weather.star
-│   └── stocks.star
-├── notes/               # General notes
-│   ├── todo.md
-│   └── projects/
-├── data/                # Data files
-│   └── exports/
-└── downloads/           # Downloaded content
+├── secure/                     # SYSTEM-ONLY — AI has ZERO access
+│   ├── config.yaml             # OpenPact configuration
+│   └── data/                   # Secrets, JWT key, approvals, etc.
+│       ├── jwt_secret
+│       ├── users.json
+│       ├── approvals.json
+│       ├── secrets.json
+│       └── opencode/
+├── ai-data/                    # AI-ACCESSIBLE — MCP tools scope here
+│   ├── SOUL.md                 # AI identity and personality
+│   ├── USER.md                 # User preferences
+│   ├── MEMORY.md               # Persistent memory
+│   ├── memory/                 # Daily memory files
+│   │   ├── 2024-01-15.md
+│   │   └── 2024-01-16.md
+│   ├── scripts/                # Starlark scripts
+│   │   ├── weather.star
+│   │   └── stocks.star
+│   ├── skills/                 # Skill definitions
+│   ├── notes/                  # General notes
+│   │   ├── todo.md
+│   │   └── projects/
+│   └── downloads/              # Downloaded content
 ```
 
 ## Use Cases
@@ -225,7 +235,7 @@ Your AI can help create and modify Starlark scripts:
 ```
 User: "Create a script to check stock prices"
 
-AI uses workspace_write to create scripts/stocks.star
+AI uses workspace_write to create ai-data/scripts/stocks.star
 ```
 
 ## Best Practices
@@ -277,7 +287,7 @@ docker run --rm \
 Consider keeping scripts in version control:
 
 ```bash
-# In workspace/scripts/
+# In workspace/ai-data/scripts/
 git init
 git add *.star
 git commit -m "Initial scripts"
@@ -305,7 +315,7 @@ In rare cases with Docker volume permissions:
 
 If you see "path traversal not allowed":
 
-1. Use only relative paths within the workspace
+1. Use only relative paths within `ai-data/`
 2. Don't use `..` to navigate up
 3. Don't use absolute paths
 

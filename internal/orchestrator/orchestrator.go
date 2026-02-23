@@ -70,11 +70,11 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		providerStatus:  make(map[string]admin.ProviderStatusInfo),
 	}
 
-	// Initialize context loader
-	o.contextLoader = opcontext.NewLoader(cfg.Workspace.Path)
+	// Initialize context loader (reads from AI-accessible data dir)
+	o.contextLoader = opcontext.NewLoader(cfg.Workspace.AIDataDir())
 
 	// Seed workspace with template context files if they don't exist
-	seedContextTemplates(cfg.Workspace.Path)
+	seedContextTemplates(cfg.Workspace.AIDataDir())
 
 	// Seed provider store from YAML config (one-time migration)
 	if providerStore != nil {
@@ -112,7 +112,7 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	// Build registration config for MCP tools
 	regCfg := mcp.RegistrationConfig{
 		WorkspacePath: cfg.Workspace.Path,
-		DataDir:       cfg.Workspace.DataDir(),
+		AIDataDir:     cfg.Workspace.AIDataDir(),
 		ReloadContext: o.ReloadContext,
 		Chat:          o,
 		Allowlist:     cfg.Admin.Allowlist,
@@ -775,10 +775,10 @@ func formatContextUsage(sessionID string, usage *engine.ContextUsage) string {
 }
 
 // buildMCPEnv creates the environment variable map for the standalone MCP server process.
+// The standalone binary derives all paths (ai-data, secure/data) from OPENPACT_WORKSPACE_PATH.
 func buildMCPEnv(cfg *config.Config) map[string]string {
 	env := map[string]string{
 		"OPENPACT_WORKSPACE_PATH": cfg.Workspace.Path,
-		"OPENPACT_DATA_DIR":       cfg.Workspace.DataDir(),
 	}
 
 	// Build feature flags

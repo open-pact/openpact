@@ -69,7 +69,7 @@ The main application entry point. Handles:
 The central coordination layer that:
 - Receives messages from all chat providers (Discord, Telegram, Slack)
 - Routes requests to the AI engine via session-based messaging
-- Manages per-channel sessions (`<DataDir>/channel_sessions.json`) — each provider:channel pair gets its own session
+- Manages per-channel sessions (`<WorkspacePath>/secure/data/channel_sessions.json`) -- each provider:channel pair gets its own session
 - Injects source context (`[via telegram, channel:X, user:Y]`) into messages
 - Manages conversation context (SOUL/USER/MEMORY injection)
 - Implements the `admin.SessionAPI` interface for the Admin UI
@@ -288,7 +288,7 @@ Request rate limiting:
 
 ### Secret Handling
 
-1. Secrets stored outside workspace
+1. Secrets stored in `secure/data/` (AI has zero access)
 2. Never passed to AI directly
 3. Injected into scripts at runtime
 4. Automatically redacted from all outputs

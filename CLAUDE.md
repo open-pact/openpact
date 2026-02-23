@@ -49,7 +49,7 @@ Admin UI     → Admin API    → Orchestrator (SessionAPI) → opencode serve
 - **discord/** — Discord bot with user/channel allowlists and bidirectional messaging
 - **starlark/** — Sandboxed Starlark script execution with built-in modules (http, json, time, secrets). Secrets are injected at runtime and redacted from output before returning to the AI
 - **config/** — YAML + env var configuration loading
-- **context/** — Loads SOUL.md, USER.md, MEMORY.md from workspace for AI context injection
+- **context/** — Loads SOUL.md, USER.md, MEMORY.md from `ai-data/` for AI context injection
 - **health/** — Health checks and Prometheus metrics
 - **ratelimit/** — Token bucket rate limiter
 - **logging/** — Structured logging with configurable levels
@@ -85,7 +85,7 @@ The engine (`internal/engine/opencode.go`) communicates with [OpenCode](https://
 
 **Session management:** OpenCode manages all session storage internally (SQLite). Chat providers use per-channel session tracking (persisted to `<DataDir>/channel_sessions.json`), where each `(provider, channelID)` pair maps to its own session. If a channel has no session when a message arrives, one is created automatically. The Admin UI can interact with any session directly.
 
-**Config (`openpact.yaml`):**
+**Config (`secure/config.yaml`):**
 ```yaml
 engine:
   type: opencode
@@ -93,17 +93,50 @@ engine:
   password: ""        # Optional OPENCODE_SERVER_PASSWORD
 ```
 
+## Workspace Directory Structure
+
+The workspace uses a security-first split between system and AI data:
+
+```
+/workspace/
+├── secure/                     # SYSTEM-ONLY — AI has ZERO access
+│   ├── config.yaml             # Main config (may contain passwords)
+│   └── data/                   # All admin/system data
+│       ├── jwt_secret
+│       ├── users.json
+│       ├── approvals.json
+│       ├── secrets.json
+│       ├── chat_providers.json
+│       ├── channel_sessions.json
+│       ├── setup_state.json
+│       └── opencode/           # OpenCode engine state (SQLite, logs, etc.)
+├── ai-data/                    # AI-ACCESSIBLE — MCP tools scope here
+│   ├── SOUL.md
+│   ├── USER.md
+│   ├── MEMORY.md
+│   ├── memory/                 # Daily memory files
+│   ├── scripts/                # Starlark scripts
+│   └── skills/                 # Skills directory
+```
+
+Key path methods on `WorkspaceConfig`:
+- `SecureDir()` → `<workspace>/secure`
+- `AIDataDir()` → `<workspace>/ai-data`
+- `DataDir()` → `<workspace>/secure/data`
+- `ScriptsDir()` → `<workspace>/ai-data/scripts`
+
 ## Key Design Decisions
 
 - **No database** — All persistence is file-based JSON (users, script approvals)
-- **Security boundary at MCP** — AI never gets direct filesystem/network access; everything goes through registered MCP tools
+- **Security boundary at MCP** — AI never gets direct filesystem/network access; everything goes through registered MCP tools. MCP workspace tools are scoped to `ai-data/` only.
+- **Physical security split** — `secure/` for system data (config, secrets, JWT), `ai-data/` for AI-accessible files. No env var needed — derived from workspace path.
 - **Secret redaction** — Starlark scripts can use secrets, but all output is scanned and secret values are replaced with `[REDACTED:NAME]` before the AI sees results
 - **Two-user Docker model** — `openpact-system` (privileged) and `openpact-ai` (restricted) for principle of least privilege
 - **Go standard library for HTTP** — Uses `net/http` directly, no web framework
 
 ## Configuration
 
-The app reads `openpact.yaml` (or `config.yaml` in workspace). Key env vars: `DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`. Starlark secrets are configured under `starlark.secrets` and can reference env vars with `${VAR}` syntax.
+The app reads `secure/config.yaml` from the workspace. All paths are derived from `WORKSPACE_PATH` — no separate data dir env var. Key env vars: `DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`.
 
 ## Admin UI Theme Reference — MANDATORY RULES
 

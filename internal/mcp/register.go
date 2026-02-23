@@ -10,7 +10,7 @@ import (
 // RegistrationConfig holds the configuration needed to register all MCP tools.
 type RegistrationConfig struct {
 	WorkspacePath string
-	DataDir       string
+	AIDataDir     string
 	ReloadContext ContextReloader   // nil for standalone mode (no context reload)
 	Calendars     []CalendarConfig
 	Vault         *VaultConfig      // nil if not configured
@@ -31,8 +31,11 @@ type ScriptRegistrationConfig struct {
 // RegisterAllTools registers all MCP tools on the given server using the provided config.
 // This is used by both the orchestrator (in-process) and the standalone MCP server binary.
 func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
-	// Workspace + memory tools (always registered)
-	RegisterDefaultTools(srv, cfg.WorkspacePath, cfg.ReloadContext)
+	// Workspace + memory tools (always registered, scoped to AI data dir)
+	RegisterDefaultTools(srv, cfg.AIDataDir, cfg.ReloadContext)
+
+	// Derive system data dir from workspace path for secrets/approvals
+	dataDir := cfg.WorkspacePath + "/secure/data"
 
 	// Calendar tools
 	if len(cfg.Calendars) > 0 {
@@ -61,9 +64,9 @@ func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 			ScriptStore:    cfg.Script.ScriptStore,
 		}
 
-		// Load secrets from store if data dir is available and secrets not provided
-		if cfg.DataDir != "" && len(scriptCfg.Secrets) == 0 {
-			secretStore := admin.NewSecretStore(cfg.DataDir)
+		// Load secrets from store if secrets not provided
+		if len(scriptCfg.Secrets) == 0 {
+			secretStore := admin.NewSecretStore(dataDir)
 			secrets, err := secretStore.All()
 			if err != nil {
 				log.Printf("Warning: failed to load secrets: %v", err)
@@ -73,8 +76,8 @@ func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 		}
 
 		// Initialize script store for approval checking
-		if cfg.Script.ScriptStore == nil && cfg.DataDir != "" {
-			scriptStore, err := admin.NewScriptStore(cfg.Script.ScriptsDir, cfg.DataDir, cfg.Allowlist)
+		if cfg.Script.ScriptStore == nil {
+			scriptStore, err := admin.NewScriptStore(cfg.Script.ScriptsDir, dataDir, cfg.Allowlist)
 			if err != nil {
 				log.Printf("Warning: failed to create script store: %v", err)
 			} else {
@@ -94,10 +97,12 @@ func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 
 // RegisterAllToolsFromEnv creates a RegistrationConfig from the standalone MCP server's
 // environment variables and registers all tools. Used by cmd/mcp-server.
-func RegisterAllToolsFromEnv(srv *Server, workspacePath, dataDir, features string) {
+func RegisterAllToolsFromEnv(srv *Server, workspacePath, features string) {
+	aiDataDir := workspacePath + "/ai-data"
+
 	cfg := RegistrationConfig{
 		WorkspacePath: workspacePath,
-		DataDir:       dataDir,
+		AIDataDir:     aiDataDir,
 	}
 
 	// In standalone mode, context reload is not available (the orchestrator handles it)
@@ -107,7 +112,7 @@ func RegisterAllToolsFromEnv(srv *Server, workspacePath, dataDir, features strin
 	featureSet := parseFeatures(features)
 
 	// Scripts are enabled by default if scripts dir exists
-	scriptsDir := workspacePath + "/scripts"
+	scriptsDir := aiDataDir + "/scripts"
 	if _, ok := featureSet["scripts"]; ok || features == "" {
 		cfg.Script = &ScriptRegistrationConfig{
 			ScriptsDir:     scriptsDir,

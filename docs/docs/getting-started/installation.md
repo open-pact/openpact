@@ -25,18 +25,17 @@ docker run -d \
 
 ### With Configuration File
 
-For more complex setups, mount a configuration file:
+For more complex setups, mount a configuration file into the `secure/` directory:
 
 ```bash
 docker run -d \
   --name openpact \
   -v openpact-workspace:/workspace \
-  -v /path/to/openpact.yaml:/config/openpact.yaml:ro \
+  -v /path/to/openpact.yaml:/workspace/secure/config.yaml:ro \
   -e DISCORD_TOKEN=your_token \
   -p 8080:8080 \
   -p 1455:1455 \
-  ghcr.io/open-pact/openpact:latest \
-  --config /config/openpact.yaml
+  ghcr.io/open-pact/openpact:latest
 ```
 
 ### Available Tags
@@ -68,10 +67,9 @@ services:
       - "1455:1455"   # OpenCode OAuth callback
     volumes:
       - openpact-workspace:/workspace
-      - ./openpact.yaml:/config/openpact.yaml:ro
+      - ./openpact.yaml:/workspace/secure/config.yaml:ro
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-    command: ["--config", "/config/openpact.yaml"]
 
 volumes:
   openpact-workspace:
@@ -111,10 +109,9 @@ services:
       - "1455:1455"   # OpenCode OAuth callback
     volumes:
       - ./workspace:/workspace
-      - ./openpact.yaml:/config/openpact.yaml:ro
+      - ./openpact.yaml:/workspace/secure/config.yaml:ro
     env_file:
       - .env
-    command: ["--config", "/config/openpact.yaml"]
 ```
 
 Rebuild after changes:

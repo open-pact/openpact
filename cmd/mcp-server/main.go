@@ -4,9 +4,9 @@
 // via environment variables from the parent process.
 //
 // Environment variables:
-//   OPENPACT_WORKSPACE_PATH - Workspace root directory
-//   OPENPACT_DATA_DIR       - Data directory for secrets/approvals
-//   OPENPACT_FEATURES       - Comma-separated feature flags
+//
+//	OPENPACT_WORKSPACE_PATH - Workspace root directory (all paths derived from this)
+//	OPENPACT_FEATURES       - Comma-separated feature flags
 package main
 
 import (
@@ -30,20 +30,18 @@ func main() {
 		workspacePath = "/workspace"
 	}
 
-	dataDir := os.Getenv("OPENPACT_DATA_DIR")
-	if dataDir == "" {
-		dataDir = workspacePath + "/data"
-	}
-
 	features := os.Getenv("OPENPACT_FEATURES")
 
-	log.Printf("Starting MCP server (workspace=%s, data=%s)", workspacePath, dataDir)
+	aiDataDir := workspacePath + "/ai-data"
+	dataDir := workspacePath + "/secure/data"
+
+	log.Printf("Starting MCP server (workspace=%s, ai-data=%s, data=%s)", workspacePath, aiDataDir, dataDir)
 
 	// Create MCP server reading from stdin, writing to stdout
 	server := mcp.NewServer(os.Stdin, os.Stdout)
 
 	// Register all tools based on environment config
-	mcp.RegisterAllToolsFromEnv(server, workspacePath, dataDir, features)
+	mcp.RegisterAllToolsFromEnv(server, workspacePath, features)
 
 	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

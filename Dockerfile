@@ -45,9 +45,12 @@ RUN addgroup --system openpact && \
     adduser --system --ingroup openpact openpact-ai
 
 # Create directories with correct permissions
-RUN mkdir -p /app /workspace /workspace/memory /workspace/skills /run/mcp && \
+RUN mkdir -p /app /workspace /workspace/secure/data /workspace/ai-data/memory /workspace/ai-data/skills /workspace/ai-data/scripts /run/mcp && \
     chown -R openpact-system:openpact /app /workspace /run/mcp && \
     chmod 750 /app /workspace && \
+    chmod 700 /workspace/secure && \
+    chmod 700 /workspace/secure/data && \
+    chmod 775 /workspace/ai-data && \
     chmod 770 /run/mcp
 
 # Copy binaries

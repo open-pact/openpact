@@ -114,7 +114,7 @@ Never commit plain-text secrets to version control. Always use environment varia
 Secrets are encrypted using AES-256-GCM:
 
 ```
-data/secrets.json
+secure/data/secrets.json
 {
   "WEATHER_API_KEY": {
     "value": "encrypted:aes256gcm:nonce:ciphertext:tag",
@@ -129,10 +129,11 @@ The encryption key is derived from the JWT secret using HKDF.
 
 ```bash
 # Secrets file
--rw-------  1 openpact openpact  1234 Jan 15 10:30 secrets.json
+-rw-------  1 openpact openpact  1234 Jan 15 10:30 secure/data/secrets.json
 
-# Data directory
-drwx------  2 openpact openpact  4096 Jan 15 10:00 data/
+# Secure directory (AI has ZERO access)
+drwx------  2 openpact openpact  4096 Jan 15 10:00 secure/
+drwx------  2 openpact openpact  4096 Jan 15 10:00 secure/data/
 ```
 
 Only the OpenPact process can read these files.
@@ -352,8 +353,8 @@ For critical secrets, use this pattern:
 
 ### Storage
 
-- [ ] Verify data directory permissions (700)
-- [ ] Verify secrets file permissions (600)
+- [ ] Verify `secure/` directory permissions (700)
+- [ ] Verify `secure/data/secrets.json` file permissions (600)
 - [ ] Ensure backups don't contain unencrypted secrets
 
 ### Access
@@ -387,4 +388,4 @@ For critical secrets, use this pattern:
 
 1. Ensure you're authenticated
 2. Check for special characters that may need escaping
-3. Verify the data directory is writable
+3. Verify the `secure/data/` directory is writable

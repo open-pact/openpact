@@ -236,8 +236,8 @@ func TestBuildOpenCodeConfig_ConfiguresMCPWhenBinaryExists(t *testing.T) {
 	if mcpEnv["OPENPACT_WORKSPACE_PATH"] != "/workspace" {
 		t.Errorf("expected OPENPACT_WORKSPACE_PATH=/workspace, got %s", mcpEnv["OPENPACT_WORKSPACE_PATH"])
 	}
-	if mcpEnv["OPENPACT_DATA_DIR"] != "/workspace/data" {
-		t.Errorf("expected OPENPACT_DATA_DIR=/workspace/data, got %s", mcpEnv["OPENPACT_DATA_DIR"])
+	if _, ok := mcpEnv["OPENPACT_DATA_DIR"]; ok {
+		t.Error("expected OPENPACT_DATA_DIR to not be set (paths derived from workspace)")
 	}
 	if mcpEnv["OPENPACT_FEATURES"] != "scripts,github" {
 		t.Errorf("expected OPENPACT_FEATURES=scripts,github, got %s", mcpEnv["OPENPACT_FEATURES"])

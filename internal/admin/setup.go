@@ -43,17 +43,17 @@ type SetupState struct {
 
 // SetupHandler handles first-run setup.
 type SetupHandler struct {
-	users         *UserStore
-	dataDir       string
-	workspacePath string
+	users     *UserStore
+	dataDir   string
+	aiDataDir string
 }
 
 // NewSetupHandler creates a new setup handler.
-func NewSetupHandler(users *UserStore, dataDir, workspacePath string) *SetupHandler {
+func NewSetupHandler(users *UserStore, dataDir, aiDataDir string) *SetupHandler {
 	return &SetupHandler{
-		users:         users,
-		dataDir:       dataDir,
-		workspacePath: workspacePath,
+		users:     users,
+		dataDir:   dataDir,
+		aiDataDir: aiDataDir,
 	}
 }
 
@@ -265,8 +265,8 @@ func (h *SetupHandler) Profile(w http.ResponseWriter, r *http.Request) {
 	soulContent := replacer.Replace(DefaultSoulTemplate)
 	userContent := replacer.Replace(DefaultUserTemplate)
 
-	// Write SOUL.md and USER.md to workspace root
-	if err := os.WriteFile(filepath.Join(h.workspacePath, "SOUL.md"), []byte(soulContent), 0644); err != nil {
+	// Write SOUL.md and USER.md to AI data directory
+	if err := os.WriteFile(filepath.Join(h.aiDataDir, "SOUL.md"), []byte(soulContent), 0644); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error":   "write_failed",
@@ -275,7 +275,7 @@ func (h *SetupHandler) Profile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.WriteFile(filepath.Join(h.workspacePath, "USER.md"), []byte(userContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(h.aiDataDir, "USER.md"), []byte(userContent), 0644); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error":   "write_failed",

@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 
 	"github.com/open-pact/openpact/internal/admin"
 	"github.com/open-pact/openpact/internal/config"
@@ -22,26 +21,22 @@ func main() {
 		bind = "localhost:8080"
 	}
 
-	dataDir := os.Getenv("ADMIN_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
-
-	scriptsDir := os.Getenv("ADMIN_SCRIPTS_DIR")
-	if scriptsDir == "" {
-		scriptsDir = "./scripts"
-	}
-
 	workspacePath := os.Getenv("WORKSPACE_PATH")
 	if workspacePath == "" {
-		workspacePath = filepath.Dir(dataDir)
+		workspacePath = "/workspace"
 	}
+
+	// All paths derived from workspace path — no separate env vars needed
+	dataDir := workspacePath + "/secure/data"
+	scriptsDir := workspacePath + "/ai-data/scripts"
+	aiDataDir := workspacePath + "/ai-data"
 
 	config := admin.Config{
 		Bind:          bind,
 		DataDir:       dataDir,
 		ScriptsDir:    scriptsDir,
 		WorkspacePath: workspacePath,
+		AIDataDir:     aiDataDir,
 		DevMode:       os.Getenv("ADMIN_DEV_MODE") == "true",
 		AccessExpiry:  admin.DefaultConfig().AccessExpiry,
 		RefreshExpiry: admin.DefaultConfig().RefreshExpiry,

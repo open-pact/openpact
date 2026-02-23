@@ -727,7 +727,6 @@ func buildOpenCodeConfig(cfg Config) map[string]interface{} {
 
 	mcpEnv := map[string]string{
 		"OPENPACT_WORKSPACE_PATH": cfg.WorkDir,
-		"OPENPACT_DATA_DIR":       cfg.DataDir,
 	}
 	for k, v := range cfg.MCPEnv {
 		mcpEnv[k] = v

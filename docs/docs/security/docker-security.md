@@ -24,8 +24,8 @@ Both `openpact-system` and `openpact-ai` are members of the `openpact` group. Fi
 
 ### Why Two Users?
 
-1. **Privilege separation** -- The AI process cannot access secrets, config, or the data directory
-2. **Defense in depth** -- Even if the AI bypasses MCP tool restrictions, Linux permissions prevent access
+1. **Privilege separation** -- The AI process cannot access secrets, config, or anything under `secure/`
+2. **Defense in depth** -- Even if the AI bypasses MCP tool restrictions, Linux permissions prevent access to `secure/`
 3. **Container escape mitigation** -- A compromised AI process has minimal privileges
 4. **Auditable** -- `ps aux` shows which user each process runs as
 
@@ -42,23 +42,25 @@ Both `openpact-system` and `openpact-ai` are members of the `openpact` group. Fi
 The entrypoint sets these permissions at container startup:
 
 ```
-/workspace/               750  openpact-system:openpact  # AI can traverse
-/workspace/data/          700  openpact-system:openpact  # AI CANNOT access
-/workspace/memory/        770  openpact-system:openpact  # AI can read+write
-/workspace/scripts/       750  openpact-system:openpact  # AI can read
-/workspace/skills/        750  openpact-system:openpact  # AI can read
-/workspace/config.yaml    600  openpact-system:openpact  # AI CANNOT access
-/workspace/SOUL.md        640  openpact-system:openpact  # AI can read
-/workspace/USER.md        640  openpact-system:openpact  # AI can read
-/workspace/MEMORY.md      660  openpact-system:openpact  # AI can read+write
+/workspace/                       750  openpact-system:openpact  # AI can traverse
+/workspace/secure/                700  openpact-system:openpact  # AI CANNOT access
+/workspace/secure/config.yaml     600  openpact-system:openpact  # AI CANNOT access
+/workspace/secure/data/           700  openpact-system:openpact  # AI CANNOT access
+/workspace/ai-data/               750  openpact-system:openpact  # AI can traverse
+/workspace/ai-data/memory/        770  openpact-system:openpact  # AI can read+write
+/workspace/ai-data/scripts/       750  openpact-system:openpact  # AI can read
+/workspace/ai-data/skills/        750  openpact-system:openpact  # AI can read
+/workspace/ai-data/SOUL.md        640  openpact-system:openpact  # AI can read
+/workspace/ai-data/USER.md        640  openpact-system:openpact  # AI can read
+/workspace/ai-data/MEMORY.md      660  openpact-system:openpact  # AI can read+write
 ```
 
 ### What This Prevents
 
 | Attack | Prevention |
 |--------|-----------|
-| AI reads secrets from data dir | 700 permission blocks group access |
-| AI reads config.yaml (may contain passwords) | 600 permission blocks group access |
+| AI reads secrets from `secure/data/` | 700 permission on `secure/` blocks group access |
+| AI reads `secure/config.yaml` (may contain passwords) | 700 permission on `secure/` blocks group access |
 | AI modifies SOUL.md directly | 640 permission blocks group write |
 | AI writes to scripts dir | 750 permission blocks group write |
 | AI reads/writes memory | 770/660 permits via MCP tools |
@@ -75,17 +77,20 @@ Container Filesystem
 │   └── templates/           # Default config/context templates
 ├── /home/
 │   ├── openpact-system/     # System user home
-│   │   └── .local/share/opencode -> /workspace/data/opencode
+│   │   └── .local/share/opencode -> /workspace/secure/data/opencode
 │   └── openpact-ai/         # AI user home
-│       └── .local/share/opencode -> /workspace/data/opencode
+│       └── .local/share/opencode -> /workspace/secure/data/opencode
 └── /workspace/              # Bind-mounted workspace volume
-    ├── data/                # Secrets, JWT key, approvals (owner-only)
-    ├── memory/              # Daily memory files (group-writable)
-    ├── scripts/             # Starlark scripts (group-readable)
-    ├── config.yaml          # Configuration (owner-only)
-    ├── SOUL.md              # AI persona (group-readable)
-    ├── USER.md              # User profile (group-readable)
-    └── MEMORY.md            # Long-term memory (group-read/write)
+    ├── secure/              # SYSTEM-ONLY — AI has ZERO access
+    │   ├── config.yaml      # Configuration (owner-only)
+    │   └── data/            # Secrets, JWT key, approvals (owner-only)
+    └── ai-data/             # AI-ACCESSIBLE — MCP tools scope here
+        ├── SOUL.md          # AI persona (group-readable)
+        ├── USER.md          # User profile (group-readable)
+        ├── MEMORY.md        # Long-term memory (group-read/write)
+        ├── memory/          # Daily memory files (group-writable)
+        ├── scripts/         # Starlark scripts (group-readable)
+        └── skills/          # Skill definitions (group-readable)
 ```
 
 ### Read-Only Root Filesystem
@@ -275,9 +280,10 @@ docker exec <container> ps aux | grep openpact
 
 ```bash
 docker exec <container> ls -la /workspace/
-# data/ should be drwx------ (700)
+# secure/ should be drwx------ (700)
+
+docker exec <container> ls -la /workspace/ai-data/
 # memory/ should be drwxrwx--- (770)
-# config.yaml should be -rw------- (600)
 # MEMORY.md should be -rw-rw---- (660)
 ```
 

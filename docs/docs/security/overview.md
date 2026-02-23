@@ -54,7 +54,7 @@ OpenPact protects against several threat categories:
 - Environment variable filtering: only LLM provider keys are passed to the AI process
 - Sensitive tokens (DISCORD_TOKEN, GITHUB_TOKEN, etc.) are excluded from the AI's environment
 - Automatic redaction of secret values in all script output
-- Secrets stored in the data directory, which is owner-only (mode 700) and inaccessible to the AI user
+- Secrets stored in the `secure/data/` directory, which is owner-only (mode 700) and inaccessible to the AI user
 
 ### Privilege Escalation
 
@@ -94,7 +94,7 @@ Layer 1: Linux User Separation
 ┌─────────────────────────────────────────────────────────────────┐
 │  openpact-system (orchestrator, admin UI, secrets)              │
 │  openpact-ai (AI engine, MCP tools only)                       │
-│  File permissions enforce boundary: data dir 700, workspace 750│
+│  File permissions enforce boundary: secure/ 700, ai-data/ 750  │
 └─────────────────────────────────────────────────────────────────┘
 
 Layer 2: Application-Level Tool Restriction
@@ -128,7 +128,7 @@ Layer 4: Container Isolation
 | Control | Description |
 |---------|-------------|
 | Two-user model | `openpact-system` owns secrets/config, `openpact-ai` runs the AI |
-| File permissions | Data dir (700), workspace (750), memory (770), config (600) |
+| File permissions | `secure/` (700), `ai-data/` (750), `ai-data/memory/` (770), `secure/config.yaml` (600) |
 | SysProcAttr | AI process spawned with `openpact-ai` UID/GID via syscall |
 | Group membership | Both users in `openpact` group for controlled shared access |
 

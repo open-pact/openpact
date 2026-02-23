@@ -22,14 +22,17 @@ The AI process (`opencode serve`) runs as `openpact-ai`, a restricted Linux user
 
 | Path | Owner | Mode | AI Access |
 |------|-------|------|-----------|
-| `/workspace/` | openpact-system:openpact | 750 | Group-read/execute (can list/read) |
-| `/workspace/data/` | openpact-system:openpact | 700 | **Denied** (owner-only) |
-| `/workspace/memory/` | openpact-system:openpact | 770 | Group-read/write |
-| `/workspace/scripts/` | openpact-system:openpact | 750 | Group-read |
-| `/workspace/config.yaml` | openpact-system:openpact | 600 | **Denied** (owner-only) |
-| `/workspace/SOUL.md` | openpact-system:openpact | 640 | Group-read |
-| `/workspace/USER.md` | openpact-system:openpact | 640 | Group-read |
-| `/workspace/MEMORY.md` | openpact-system:openpact | 660 | Group-read/write |
+| `/workspace/` | openpact-system:openpact | 750 | Group-read/execute (can traverse) |
+| `/workspace/secure/` | openpact-system:openpact | 700 | **Denied** (owner-only) |
+| `/workspace/secure/config.yaml` | openpact-system:openpact | 600 | **Denied** (owner-only) |
+| `/workspace/secure/data/` | openpact-system:openpact | 700 | **Denied** (owner-only) |
+| `/workspace/ai-data/` | openpact-system:openpact | 750 | Group-read/execute (MCP tools scope here) |
+| `/workspace/ai-data/memory/` | openpact-system:openpact | 770 | Group-read/write |
+| `/workspace/ai-data/scripts/` | openpact-system:openpact | 750 | Group-read |
+| `/workspace/ai-data/skills/` | openpact-system:openpact | 750 | Group-read |
+| `/workspace/ai-data/SOUL.md` | openpact-system:openpact | 640 | Group-read |
+| `/workspace/ai-data/USER.md` | openpact-system:openpact | 640 | Group-read |
+| `/workspace/ai-data/MEMORY.md` | openpact-system:openpact | 660 | Group-read/write |
 
 ### Layer 2: Application Tool Restriction
 
@@ -55,8 +58,8 @@ OpenCode's built-in tools (bash, write, edit, read, grep, glob, list, patch, web
 - **Direct file writes** -- OpenCode's `write`/`edit`/`patch` tools are disabled
 - **Environment variables** -- only LLM provider keys and system basics are passed through
 - **Sensitive tokens** -- DISCORD_TOKEN, GITHUB_TOKEN, SLACK_BOT_TOKEN, ADMIN_JWT_SECRET excluded
-- **Data directory** -- owner-only permissions (700) block group access
-- **Config file** -- owner-only permissions (600)
+- **Secure directory** -- `secure/` has owner-only permissions (700), blocking group access to config and data
+- **Config file** -- inside `secure/`, owner-only permissions (600)
 - **Secret values** -- scripts see secrets but output is redacted with `[REDACTED]`
 - **Unapproved scripts** -- `script_run` checks approval status
 - **Admin UI operations** -- admin API requires JWT auth
@@ -81,9 +84,9 @@ Each MCP tool has explicit capability boundaries:
 
 | Tool | Capabilities | Restrictions |
 |------|--------------|--------------|
-| `workspace_read` | Read workspace files | Workspace directory only, path validation |
-| `workspace_write` | Write workspace files | Workspace directory only, path validation |
-| `workspace_list` | List workspace contents | Workspace directory only |
+| `workspace_read` | Read workspace files | `ai-data/` directory only, path validation |
+| `workspace_write` | Write workspace files | `ai-data/` directory only, path validation |
+| `workspace_list` | List workspace contents | `ai-data/` directory only |
 
 ### Memory Tools
 
@@ -153,7 +156,7 @@ docker exec <container> ps aux | grep opencode
 
 # Verify file permissions
 docker exec <container> ls -la /workspace/
-docker exec <container> ls -la /workspace/data/
+docker exec <container> ls -la /workspace/ai-data/
 ```
 
 ## Summary
@@ -163,6 +166,6 @@ docker exec <container> ls -la /workspace/data/
 | AI process | Runs as `openpact-ai`, filtered env, disabled built-in tools |
 | MCP tools | Explicit registration, path validation, approval workflow |
 | Scripts | Starlark sandbox, admin approval, secret redaction |
-| Workspace | Scoped directory, group-based permissions |
-| Secrets | Owner-only data dir, env filtering, output redaction |
+| Workspace | AI scoped to `ai-data/` only, group-based permissions |
+| Secrets | Owner-only `secure/data/` dir, env filtering, output redaction |
 | Container | Non-root users, entrypoint permissions, Docker isolation |

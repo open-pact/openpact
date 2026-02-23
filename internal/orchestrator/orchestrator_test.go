@@ -9,17 +9,19 @@ import (
 )
 
 func TestNewOrchestrator(t *testing.T) {
+	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		Engine: config.EngineConfig{
 			Type: "opencode",
 		},
 		Workspace: config.WorkspaceConfig{
-			Path: t.TempDir(),
+			Path: tmpDir,
 		},
 		Discord: config.DiscordConfig{
 			Enabled: false, // Don't try to connect
 		},
 	}
+	cfg.Workspace.EnsureDirs()
 
 	o, err := New(cfg, nil)
 	if err != nil {
@@ -44,12 +46,13 @@ func TestNewOrchestrator(t *testing.T) {
 }
 
 func TestNewOrchestratorWithDiscordNoToken(t *testing.T) {
+	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		Engine: config.EngineConfig{
 			Type: "opencode",
 		},
 		Workspace: config.WorkspaceConfig{
-			Path: t.TempDir(),
+			Path: tmpDir,
 		},
 		Discord: config.DiscordConfig{
 			Enabled:      true,
@@ -57,6 +60,7 @@ func TestNewOrchestratorWithDiscordNoToken(t *testing.T) {
 			AllowedChans: []string{"456"},
 		},
 	}
+	cfg.Workspace.EnsureDirs()
 
 	// With no DISCORD_TOKEN env var, discord creation should be skipped
 	o, err := New(cfg, nil)
@@ -71,17 +75,19 @@ func TestNewOrchestratorWithDiscordNoToken(t *testing.T) {
 }
 
 func TestOrchestratorDoubleStart(t *testing.T) {
+	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		Engine: config.EngineConfig{
 			Type: "opencode",
 		},
 		Workspace: config.WorkspaceConfig{
-			Path: t.TempDir(),
+			Path: tmpDir,
 		},
 		Discord: config.DiscordConfig{
 			Enabled: false,
 		},
 	}
+	cfg.Workspace.EnsureDirs()
 
 	o, err := New(cfg, nil)
 	if err != nil {
@@ -101,17 +107,19 @@ func TestOrchestratorDoubleStart(t *testing.T) {
 }
 
 func TestOrchestratorStop(t *testing.T) {
+	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		Engine: config.EngineConfig{
 			Type: "opencode",
 		},
 		Workspace: config.WorkspaceConfig{
-			Path: t.TempDir(),
+			Path: tmpDir,
 		},
 		Discord: config.DiscordConfig{
 			Enabled: false,
 		},
 	}
+	cfg.Workspace.EnsureDirs()
 
 	o, err := New(cfg, nil)
 	if err != nil {
@@ -136,6 +144,7 @@ func TestOrchestratorReloadContext(t *testing.T) {
 			Enabled: false,
 		},
 	}
+	cfg.Workspace.EnsureDirs()
 
 	o, err := New(cfg, nil)
 	if err != nil {

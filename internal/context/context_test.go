@@ -147,8 +147,11 @@ func TestOpenPactContentIncludesMCPTools(t *testing.T) {
 	if !strings.Contains(OpenPactContent, "workspace_read") {
 		t.Error("OpenPactContent should document workspace_read tool")
 	}
-	if !strings.Contains(OpenPactContent, "memory_write") {
-		t.Error("OpenPactContent should document memory_write tool")
+	if !strings.Contains(OpenPactContent, "workspace_write") {
+		t.Error("OpenPactContent should document workspace_write tool")
+	}
+	if !strings.Contains(OpenPactContent, "MEMORY.md") {
+		t.Error("OpenPactContent should document memory file paths")
 	}
 }
 
