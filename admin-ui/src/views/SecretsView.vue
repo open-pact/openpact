@@ -193,7 +193,7 @@ onMounted(loadSecrets)
 </script>
 
 <template>
-  <div class="secrets-page" style="max-width: 900px; margin: 0 auto">
+  <div class="secrets-page">
     <div class="page-header">
       <h2 class="page-title">Secrets</h2>
       <n-button type="primary" @click="showAddModal = true">

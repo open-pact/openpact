@@ -113,3 +113,8 @@ a:hover {
 .border-color-default {
   border-color: var(--border-color);
 }
+
+// Layout container max-width (mirrors YummyAdmin md-container)
+.md-container {
+  max-width: 1536px;
+}

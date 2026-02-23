@@ -237,7 +237,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="providers-page" style="max-width: 900px; margin: 0 auto">
+  <div class="providers-page">
     <div class="page-header">
       <h2 class="page-title">Chat Providers</h2>
     </div>

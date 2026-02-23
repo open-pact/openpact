@@ -112,7 +112,7 @@ onMounted(loadScript)
 </script>
 
 <template>
-  <div class="editor-page" style="max-width: 1000px; margin: 0 auto">
+  <div class="editor-page">
     <n-spin :show="loading">
       <template v-if="script">
         <div class="page-header">

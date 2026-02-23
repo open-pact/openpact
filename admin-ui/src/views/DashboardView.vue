@@ -59,7 +59,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="dashboard" style="max-width: 960px; margin: 0 auto">
+  <div class="dashboard">
     <!-- Welcome banner -->
     <Card>
       <div class="welcome-banner">

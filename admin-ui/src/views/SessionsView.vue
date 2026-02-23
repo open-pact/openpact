@@ -256,7 +256,7 @@ onMounted(loadSessions)
 </script>
 
 <template>
-  <div class="sessions-page" style="max-width: 1000px; margin: 0 auto">
+  <div class="sessions-page">
     <div class="page-header">
       <h2 class="page-title">Sessions</h2>
       <n-button type="primary" @click="createSession">

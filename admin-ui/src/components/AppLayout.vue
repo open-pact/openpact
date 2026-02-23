@@ -15,7 +15,7 @@ const layoutStore = useLayoutStore()
         <Navbar />
         <div class="relative h-full">
           <NScrollbar>
-            <div class="h-full overflow-auto p-4 md:p-6">
+            <div class="h-full overflow-auto md:mx-auto p-4 md:p-6 md-container">
               <router-view v-slot="{ Component, route }">
                 <transition name="route" mode="out-in">
                   <div :key="route.name">

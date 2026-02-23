@@ -105,6 +105,16 @@ engine:
 
 The app reads `openpact.yaml` (or `config.yaml` in workspace). Key env vars: `DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`. Starlark secrets are configured under `starlark.secrets` and can reference env vars with `${VAR}` syntax.
 
+## Admin UI Theme Reference
+
+The admin UI is based on the [YummyAdmin](https://github.com/nicevoice/yummy-admin) theme (Naive UI + Vue 3). The full AI reference document for the theme is at `ai/theme/theme-instructions.md`, and the original theme source is at `ai/theme/YummyAdmin/src/`. Consult these when implementing or modifying admin UI components, layouts, or styling.
+
+Key conventions:
+- Page width is controlled at the layout level (`AppLayout.vue`), not per-page — individual pages should NOT set their own `max-width`
+- Uses UnoCSS (with `presetUno`, `presetAttributify`, `presetWind`) for utility classes
+- Dark mode via `dark:` UnoCSS variants and CSS variables in `admin-ui/src/styles/main.scss`
+- Component library: Naive UI (`n-` prefixed components)
+
 ## Go Module
 
 Module path: `github.com/open-pact/openpact`, Go 1.22.

@@ -209,7 +209,7 @@ onMounted(loadScripts)
 </script>
 
 <template>
-  <div class="scripts-page" style="max-width: 1100px; margin: 0 auto">
+  <div class="scripts-page">
     <div class="page-header">
       <h2 class="page-title">Scripts</h2>
       <n-button type="primary" @click="showCreateModal = true">

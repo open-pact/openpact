@@ -92,7 +92,7 @@ async function signOut() {
 </script>
 
 <template>
-  <div class="auth-page" style="max-width: 700px; margin: 0 auto">
+  <div class="auth-page">
     <h2 class="page-title" style="margin-bottom: 20px">Engine Authentication</h2>
 
     <n-spin :show="loading">
