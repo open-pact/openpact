@@ -171,7 +171,7 @@ Layer 4: Container Isolation
 
 - [ ] Configure TLS (use reverse proxy or native HTTPS)
 - [ ] Set strong admin password
-- [ ] Review default configuration (especially `run_as_user` and `mcp_binary`)
+- [ ] Review default configuration (especially `run_as_user`)
 - [ ] Set up monitoring and alerting
 - [ ] Configure IP allowlisting if possible
 

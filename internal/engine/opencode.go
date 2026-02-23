@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -680,6 +681,27 @@ func filterEnvKey(env []string, key string) []string {
 	return result
 }
 
+// findMCPBinary locates the mcp-server binary. It looks next to the current
+// executable first (they're always built and deployed together), then falls
+// back to PATH lookup. Returns an error if the binary cannot be found.
+func findMCPBinary() (string, error) {
+	// Look next to the current executable (e.g. /app/openpact → /app/mcp-server)
+	exe, err := os.Executable()
+	if err == nil {
+		sibling := filepath.Join(filepath.Dir(exe), "mcp-server")
+		if _, err := os.Stat(sibling); err == nil {
+			return sibling, nil
+		}
+	}
+
+	// Fall back to PATH
+	if p, err := exec.LookPath("mcp-server"); err == nil {
+		return p, nil
+	}
+
+	return "", fmt.Errorf("mcp-server binary not found (looked next to %s and in PATH)", exe)
+}
+
 // buildOpenCodeConfig generates the OpenCode configuration that disables built-in
 // tools and configures our MCP server. Passed via OPENCODE_CONFIG_CONTENT env var.
 func buildOpenCodeConfig(cfg Config) map[string]interface{} {
@@ -696,24 +718,28 @@ func buildOpenCodeConfig(cfg Config) map[string]interface{} {
 		},
 	}
 
-	// Configure our MCP server if binary is specified
-	if cfg.MCPBinary != "" {
-		mcpEnv := map[string]string{
-			"OPENPACT_WORKSPACE_PATH": cfg.WorkDir,
-			"OPENPACT_DATA_DIR":       cfg.DataDir,
-		}
-		for k, v := range cfg.MCPEnv {
-			mcpEnv[k] = v
-		}
+	// Auto-discover the MCP server binary
+	mcpBinary, err := findMCPBinary()
+	if err != nil {
+		log.Printf("WARNING: %v — AI will have no tools available", err)
+		return config
+	}
 
-		config["mcp"] = map[string]interface{}{
-			"openpact": map[string]interface{}{
-				"type":        "local",
-				"command":     []string{cfg.MCPBinary},
-				"environment": mcpEnv,
-				"enabled":     true,
-			},
-		}
+	mcpEnv := map[string]string{
+		"OPENPACT_WORKSPACE_PATH": cfg.WorkDir,
+		"OPENPACT_DATA_DIR":       cfg.DataDir,
+	}
+	for k, v := range cfg.MCPEnv {
+		mcpEnv[k] = v
+	}
+
+	config["mcp"] = map[string]interface{}{
+		"openpact": map[string]interface{}{
+			"type":        "local",
+			"command":     []string{mcpBinary},
+			"environment": mcpEnv,
+			"enabled":     true,
+		},
 	}
 
 	return config

@@ -24,8 +24,13 @@ func TestLoadEmptyWorkspace(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if prompt != "" {
-		t.Errorf("expected empty prompt for empty workspace, got: %s", prompt)
+	// Even with no workspace files, the hardcoded openpact section is always present
+	if !strings.Contains(prompt, "<openpact>") {
+		t.Error("prompt should always contain <openpact> section, even with empty workspace")
+	}
+
+	if !strings.Contains(prompt, "How You Work") {
+		t.Error("prompt should contain OpenPact framework docs")
 	}
 }
 
@@ -88,6 +93,8 @@ func TestLoadAllContextFiles(t *testing.T) {
 
 	// Check all sections are present
 	expectedContents := []string{
+		"<openpact>",
+		"How You Work",
 		"I am Remy, a helpful fox.",
 		"Matt is a software engineer.",
 		"User prefers concise answers",
@@ -102,6 +109,46 @@ func TestLoadAllContextFiles(t *testing.T) {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("prompt should contain '%s'", expected)
 		}
+	}
+}
+
+func TestOpenPactContentAlwaysFirst(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write a SOUL.md so we can verify ordering
+	if err := os.WriteFile(filepath.Join(tmpDir, "SOUL.md"), []byte("My identity"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	l := NewLoader(tmpDir)
+	prompt, err := l.Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	openpactIdx := strings.Index(prompt, "<openpact>")
+	identityIdx := strings.Index(prompt, "<identity>")
+
+	if openpactIdx == -1 {
+		t.Fatal("prompt missing <openpact> section")
+	}
+	if identityIdx == -1 {
+		t.Fatal("prompt missing <identity> section")
+	}
+	if openpactIdx >= identityIdx {
+		t.Error("openpact section should come before identity section")
+	}
+}
+
+func TestOpenPactContentIncludesMCPTools(t *testing.T) {
+	if !strings.Contains(OpenPactContent, "MCP tools") {
+		t.Error("OpenPactContent should reference MCP tools")
+	}
+	if !strings.Contains(OpenPactContent, "workspace_read") {
+		t.Error("OpenPactContent should document workspace_read tool")
+	}
+	if !strings.Contains(OpenPactContent, "memory_write") {
+		t.Error("OpenPactContent should document memory_write tool")
 	}
 }
 

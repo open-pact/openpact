@@ -155,11 +155,54 @@ func TestBuildOpenCodeConfig_SetsPermissions(t *testing.T) {
 	}
 }
 
-func TestBuildOpenCodeConfig_ConfiguresMCP(t *testing.T) {
+func TestFindMCPBinary_NextToExecutable(t *testing.T) {
+	// Create a temp dir with a fake mcp-server binary
+	tmpDir := t.TempDir()
+	fakeBinary := tmpDir + "/mcp-server"
+	if err := os.WriteFile(fakeBinary, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// findMCPBinary looks next to os.Executable(), which we can't override,
+	// but we can verify it falls back to PATH lookup
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+":"+origPath)
+	defer os.Setenv("PATH", origPath)
+
+	path, err := findMCPBinary()
+	if err != nil {
+		t.Fatalf("expected to find mcp-server in PATH, got error: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected non-empty path")
+	}
+}
+
+func TestFindMCPBinary_NotFound(t *testing.T) {
+	// Empty PATH so it can't find anything
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", "")
+	defer os.Setenv("PATH", origPath)
+
+	_, err := findMCPBinary()
+	if err == nil {
+		t.Error("expected error when mcp-server not found")
+	}
+}
+
+func TestBuildOpenCodeConfig_ConfiguresMCPWhenBinaryExists(t *testing.T) {
+	// Create a fake mcp-server on PATH so auto-discovery works
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(tmpDir+"/mcp-server", []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+":"+origPath)
+	defer os.Setenv("PATH", origPath)
+
 	cfg := Config{
-		MCPBinary: "/app/mcp-server",
-		WorkDir:   "/workspace",
-		DataDir:   "/workspace/data",
+		WorkDir: "/workspace",
+		DataDir: "/workspace/data",
 		MCPEnv: map[string]string{
 			"OPENPACT_FEATURES": "scripts,github",
 		},
@@ -181,8 +224,8 @@ func TestBuildOpenCodeConfig_ConfiguresMCP(t *testing.T) {
 	}
 
 	command, ok := openpact["command"].([]string)
-	if !ok || len(command) != 1 || command[0] != "/app/mcp-server" {
-		t.Errorf("expected command to be ['/app/mcp-server'], got %v", command)
+	if !ok || len(command) != 1 {
+		t.Errorf("expected command to be a single-element slice, got %v", command)
 	}
 
 	mcpEnv, ok := openpact["environment"].(map[string]string)
@@ -201,20 +244,33 @@ func TestBuildOpenCodeConfig_ConfiguresMCP(t *testing.T) {
 	}
 }
 
-func TestBuildOpenCodeConfig_NoMCPWithoutBinary(t *testing.T) {
+func TestBuildOpenCodeConfig_NoMCPWhenBinaryMissing(t *testing.T) {
+	// Empty PATH so mcp-server can't be found
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", "")
+	defer os.Setenv("PATH", origPath)
+
 	cfg := Config{}
 	config := buildOpenCodeConfig(cfg)
 
 	if _, ok := config["mcp"]; ok {
-		t.Error("expected no mcp section when MCPBinary is empty")
+		t.Error("expected no mcp section when mcp-server binary not found")
 	}
 }
 
 func TestBuildOpenCodeConfig_ValidJSON(t *testing.T) {
+	// Create a fake mcp-server on PATH
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(tmpDir+"/mcp-server", []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+":"+origPath)
+	defer os.Setenv("PATH", origPath)
+
 	cfg := Config{
-		MCPBinary: "/app/mcp-server",
-		WorkDir:   "/workspace",
-		DataDir:   "/workspace/data",
+		WorkDir: "/workspace",
+		DataDir: "/workspace/data",
 	}
 	config := buildOpenCodeConfig(cfg)
 

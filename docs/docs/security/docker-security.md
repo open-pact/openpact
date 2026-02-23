@@ -302,7 +302,7 @@ docker exec <container> ls -la /workspace/
 
 - [ ] Entrypoint sets correct file permissions
 - [ ] `run_as_user` set to `openpact-ai` in config
-- [ ] `mcp_binary` points to `/app/mcp-server`
+- [ ] `mcp-server` binary exists at `/app/mcp-server` (auto-discovered)
 - [ ] Read-only root filesystem (recommended)
 - [ ] Capabilities dropped
 - [ ] Resource limits set

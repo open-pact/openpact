@@ -118,8 +118,9 @@ Each MCP tool has explicit capability boundaries:
 engine:
   type: opencode
   run_as_user: "openpact-ai"     # Run AI as restricted user
-  mcp_binary: "/app/mcp-server"  # Standalone MCP server binary
 ```
+
+The MCP server binary is auto-discovered at startup (next to the main binary, or via PATH). No configuration is needed.
 
 Set `run_as_user` to empty string for development mode (runs AI as current user).
 
@@ -128,7 +129,7 @@ Set `run_as_user` to empty string for development mode (runs AI as current user)
 | Setting | Dev Mode | Production (Docker) |
 |---------|----------|---------------------|
 | `run_as_user` | `""` (empty) | `"openpact-ai"` |
-| `mcp_binary` | `""` (empty) | `"/app/mcp-server"` |
+| MCP server | Auto-discovered from PATH | Auto-discovered at `/app/mcp-server` |
 | Built-in tools | Disabled (config still applied) | Disabled |
 | File permissions | Host OS permissions | Entrypoint sets strict permissions |
 

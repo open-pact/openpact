@@ -24,6 +24,9 @@ func NewLoader(workspacePath string) *Loader {
 func (l *Loader) Load() (string, error) {
 	var parts []string
 
+	// Hardcoded OpenPact framework docs — always present, always current
+	parts = append(parts, wrapSection("OpenPact", OpenPactContent))
+
 	// Load SOUL.md - core identity/personality
 	soul, err := l.loadFile("SOUL.md")
 	if err == nil && soul != "" {
@@ -48,10 +51,6 @@ func (l *Loader) Load() (string, error) {
 	daily, err := l.loadFile(dailyPath)
 	if err == nil && daily != "" {
 		parts = append(parts, wrapSection(fmt.Sprintf("Today's Memory (%s)", today), daily))
-	}
-
-	if len(parts) == 0 {
-		return "", nil
 	}
 
 	return strings.Join(parts, "\n\n"), nil

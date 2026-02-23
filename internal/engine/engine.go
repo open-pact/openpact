@@ -101,13 +101,11 @@ type Config struct {
 	Type      string            // "opencode"
 	Provider  string            // For OpenCode: provider name
 	Model     string            // Model to use
-	MCPPath   string            // Path to MCP server socket/binary (unused, kept for compatibility)
 	DataDir   string            // Data directory for stored credentials
 	WorkDir   string            // Working directory for engine subprocess
 	Port      int               // Port for opencode serve (0 = pick free port)
 	Password  string            // Optional OPENCODE_SERVER_PASSWORD
 	RunAsUser string            // Linux user to run OpenCode as (empty = current user)
-	MCPBinary string            // Path to standalone MCP server binary
 	MCPEnv    map[string]string // Extra env vars for MCP server process
 }
 

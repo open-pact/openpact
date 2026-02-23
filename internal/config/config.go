@@ -76,7 +76,7 @@ type EngineConfig struct {
 	Port      int    `yaml:"port"`         // Port for opencode serve (0 = pick free port)
 	Password  string `yaml:"password"`     // Optional OPENCODE_SERVER_PASSWORD
 	RunAsUser string `yaml:"run_as_user"`  // Linux user for AI process (empty = current user)
-	MCPBinary string `yaml:"mcp_binary"`   // Path to standalone MCP server binary
+	MCPBinary string `yaml:"mcp_binary"`   // Deprecated: MCP binary is now auto-discovered. Ignored if set.
 }
 
 // WorkspaceConfig configures workspace paths

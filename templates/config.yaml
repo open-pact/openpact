@@ -5,7 +5,6 @@ engine:
   provider: anthropic  # anthropic, openai, google, ollama, etc.
   model: claude-sonnet-4-20250514
   run_as_user: "openpact-ai"    # Run AI as restricted user (empty = current user, for dev)
-  mcp_binary: "/app/mcp-server"  # Standalone MCP server binary for AI tools
 
 workspace:
   path: /workspace

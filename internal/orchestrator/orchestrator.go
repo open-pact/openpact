@@ -186,7 +186,6 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		Port:      cfg.Engine.Port,
 		Password:  cfg.Engine.Password,
 		RunAsUser: cfg.Engine.RunAsUser,
-		MCPBinary: cfg.Engine.MCPBinary,
 		MCPEnv:    mcpEnv,
 	}
 	eng, err := engine.New(engineCfg)
