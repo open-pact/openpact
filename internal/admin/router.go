@@ -1,9 +1,12 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
+
+	version "github.com/open-pact/openpact"
 )
 
 // Config holds the admin server configuration.
@@ -102,6 +105,9 @@ func NewServer(config Config) (*Server, error) {
 // Handler returns the HTTP handler for the admin API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Version endpoint (no auth required)
+	mux.HandleFunc("/api/version", handleVersion)
 
 	// Setup endpoints (no auth required, but blocked after setup complete)
 	mux.HandleFunc("/api/setup/status", s.setupHandler.Status)
@@ -327,6 +333,16 @@ func (s *Server) SetProviderManagerAPI(api ProviderManagerAPI) {
 // ProviderStore returns the provider store.
 func (s *Server) ProviderStore() *ProviderStore {
 	return s.providerHandlers.store
+}
+
+// handleVersion returns the application version.
+func handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"version": version.Get()})
 }
 
 // handleSecretByName routes /api/secrets/:name requests.

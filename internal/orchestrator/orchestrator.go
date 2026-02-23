@@ -564,6 +564,8 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 
 // handleChatCommand processes slash/bot commands from any provider.
 func (o *Orchestrator) handleChatCommand(provider, channelID, userID, command, args string) (string, error) {
+	log.Printf("[%s] Command from %s in %s: /%s %s", provider, userID, channelID, command, args)
+
 	switch command {
 	case "new":
 		session, err := o.engine.CreateSession()

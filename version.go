@@ -1,10 +1,14 @@
 package version
 
-import _ "embed"
+import (
+	_ "embed"
+	"strings"
+)
 
 //go:embed VERSION
-var version string
+var rawVersion string
 
+// Get returns the application version string.
 func Get() string {
-	return version
+	return strings.TrimSpace(rawVersion)
 }

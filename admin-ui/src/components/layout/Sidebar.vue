@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { NLayoutSider, NButton, NIcon } from 'naive-ui'
@@ -12,6 +12,19 @@ import SidebarMenu from './SidebarMenu.vue'
 
 const layoutStore = useLayoutStore()
 const { collapsed, forceCollapsed, mobileMode, mobileMenuClosed } = storeToRefs(layoutStore)
+
+const appVersion = ref('')
+onMounted(async () => {
+  try {
+    const res = await fetch('/api/version')
+    if (res.ok) {
+      const data = await res.json()
+      appVersion.value = data.version
+    }
+  } catch {
+    // ignore
+  }
+})
 
 const effectiveCollapsed = computed(() => {
   if (mobileMode.value) return mobileMenuClosed.value
@@ -52,6 +65,9 @@ router.beforeEach(() => {
       </div>
     </div>
     <SidebarMenu />
+    <div v-if="appVersion" class="sidebar-version">
+      v{{ appVersion }}
+    </div>
   </n-layout-sider>
 </template>
 
@@ -109,8 +125,22 @@ router.beforeEach(() => {
   }
 }
 
+.sidebar-version {
+  position: absolute;
+  bottom: 16px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--primary-color);
+  opacity: 0.3;
+  user-select: none;
+}
+
 .n-layout-sider {
   background-color: transparent;
+  position: relative;
 }
 
 .n-menu .n-menu-item-content:not(.n-menu-item-content--disabled):hover::before {

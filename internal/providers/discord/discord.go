@@ -20,9 +20,8 @@ type Bot struct {
 	commandHandler chat.CommandHandler
 	allowedUsers   map[string]bool // User IDs allowed to DM
 	allowedChans   map[string]bool // Channel IDs allowed
-	botUserID      string
-	registeredCmds []*discordgo.ApplicationCommand
-	mu             sync.RWMutex
+	botUserID string
+	mu        sync.RWMutex
 }
 
 // Config holds Discord bot configuration
@@ -109,10 +108,11 @@ func (b *Bot) Start() error {
 	return nil
 }
 
-// Stop disconnects the bot from Discord and cleans up commands
+// Stop disconnects the bot from Discord.
+// Commands are intentionally NOT unregistered on shutdown — global commands
+// can take up to an hour to propagate, so deleting them causes a window
+// where commands don't work after a restart. They're overwritten on next startup.
 func (b *Bot) Stop() error {
-	// Unregister commands
-	b.unregisterCommands()
 	return b.session.Close()
 }
 
@@ -145,28 +145,16 @@ func (b *Bot) registerCommands() error {
 		},
 	}
 
-	b.registeredCmds = make([]*discordgo.ApplicationCommand, 0, len(commands))
-
 	for _, cmd := range commands {
-		registered, err := b.session.ApplicationCommandCreate(b.session.State.User.ID, "", cmd)
-		if err != nil {
+		if _, err := b.session.ApplicationCommandCreate(b.session.State.User.ID, "", cmd); err != nil {
 			return fmt.Errorf("failed to register command %s: %w", cmd.Name, err)
 		}
-		b.registeredCmds = append(b.registeredCmds, registered)
 		log.Printf("Registered Discord command: /%s", cmd.Name)
 	}
 
 	return nil
 }
 
-// unregisterCommands removes slash commands from Discord
-func (b *Bot) unregisterCommands() {
-	for _, cmd := range b.registeredCmds {
-		if err := b.session.ApplicationCommandDelete(b.session.State.User.ID, "", cmd.ID); err != nil {
-			log.Printf("Warning: failed to unregister command %s: %v", cmd.Name, err)
-		}
-	}
-}
 
 // onInteractionCreate handles slash command interactions
 func (b *Bot) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {

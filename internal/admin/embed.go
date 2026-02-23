@@ -1,14 +1,12 @@
 package admin
 
 import (
-	"embed"
 	"io/fs"
 	"net/http"
 	"strings"
-)
 
-//go:embed all:admin-ui/dist
-var adminUIFS embed.FS
+	adminui "github.com/open-pact/openpact/admin-ui"
+)
 
 // SPAHandler serves the embedded Vue SPA and falls back to index.html for client-side routing.
 type SPAHandler struct {
@@ -20,7 +18,7 @@ type SPAHandler struct {
 // NewSPAHandler creates a new SPA handler from the embedded filesystem.
 func NewSPAHandler() (*SPAHandler, error) {
 	// Get the dist subdirectory
-	subFS, err := fs.Sub(adminUIFS, "admin-ui/dist")
+	subFS, err := fs.Sub(adminui.DistFS, "dist")
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +110,7 @@ func (s *Server) HandlerWithUI() (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	// API routes (must come first due to path matching)
+	mux.HandleFunc("/api/version", handleVersion)
 	mux.HandleFunc("/api/setup/status", s.setupHandler.Status)
 	mux.HandleFunc("/api/setup/profile", s.setupHandler.Profile)
 	mux.HandleFunc("/api/setup", s.setupHandler.Setup)

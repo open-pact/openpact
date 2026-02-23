@@ -11,13 +11,13 @@ RUN npm run build
 
 # ---
 
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 COPY go.mod go.sum* ./
 RUN go mod download || true
 COPY . .
-COPY --from=ui-builder /ui/dist/ ./internal/admin/admin-ui/dist/
+COPY --from=ui-builder /ui/dist/ ./admin-ui/dist/
 RUN CGO_ENABLED=0 GOOS=linux go build -o openpact ./cmd/openpact
 
 # ---

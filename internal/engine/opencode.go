@@ -166,11 +166,16 @@ func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Messag
 		body["system"] = systemPrompt
 	}
 
-	// Add model if configured
+	// Add model if configured (API expects an object with providerID + modelID)
 	if o.cfg.Provider != "" && o.cfg.Model != "" {
-		body["model"] = o.cfg.Provider + "/" + o.cfg.Model
+		body["model"] = map[string]string{
+			"providerID": o.cfg.Provider,
+			"modelID":    o.cfg.Model,
+		}
 	} else if o.cfg.Model != "" {
-		body["model"] = o.cfg.Model
+		body["model"] = map[string]string{
+			"modelID": o.cfg.Model,
+		}
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -410,9 +415,19 @@ func (o *OpenCode) GetMessages(sessionID string, limit int) ([]MessageInfo, erro
 		return nil, fmt.Errorf("get messages failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	var messages []MessageInfo
-	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
+	// OpenCode wraps each message in {"info": {...}, "parts": [...]}
+	var wrapped []struct {
+		Info  MessageInfo   `json:"info"`
+		Parts []MessagePart `json:"parts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapped); err != nil {
 		return nil, fmt.Errorf("failed to decode messages: %w", err)
+	}
+
+	messages := make([]MessageInfo, len(wrapped))
+	for i, w := range wrapped {
+		messages[i] = w.Info
+		messages[i].Parts = w.Parts
 	}
 
 	return messages, nil
@@ -439,18 +454,23 @@ func (o *OpenCode) GetContextUsage(sessionID string) (*ContextUsage, error) {
 		return nil, fmt.Errorf("get messages failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Parse with anonymous struct to access tokens/cost fields without changing MessageInfo
+	// Parse messages — OpenCode wraps each message in {"info": {...}, "parts": [...]}
 	var messages []struct {
-		Role  string `json:"role"`
-		Model string `json:"model"`
-		Tokens struct {
-			Input     int `json:"input"`
-			Output    int `json:"output"`
-			Reasoning int `json:"reasoning"`
-			CacheRead  int `json:"cacheRead"`
-			CacheWrite int `json:"cacheWrite"`
-		} `json:"tokens"`
-		Cost float64 `json:"cost"`
+		Info struct {
+			Role       string `json:"role"`
+			ModelID    string `json:"modelID"`
+			ProviderID string `json:"providerID"`
+			Tokens     struct {
+				Input  int `json:"input"`
+				Output int `json:"output"`
+				Reasoning int `json:"reasoning"`
+				Cache  struct {
+					Read  int `json:"read"`
+					Write int `json:"write"`
+				} `json:"cache"`
+			} `json:"tokens"`
+			Cost float64 `json:"cost"`
+		} `json:"info"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
 		return nil, fmt.Errorf("failed to decode messages: %w", err)
@@ -459,19 +479,19 @@ func (o *OpenCode) GetContextUsage(sessionID string) (*ContextUsage, error) {
 	usage := &ContextUsage{}
 
 	for _, msg := range messages {
-		if msg.Role != "assistant" {
+		if msg.Info.Role != "assistant" {
 			continue
 		}
 		usage.MessageCount++
-		usage.CurrentContext = msg.Tokens.Input // overwrite each time; last one is current
-		usage.TotalOutput += msg.Tokens.Output
-		usage.TotalReasoning += msg.Tokens.Reasoning
-		usage.CacheRead += msg.Tokens.CacheRead
-		usage.CacheWrite += msg.Tokens.CacheWrite
-		usage.TotalCost += msg.Cost
+		usage.CurrentContext = msg.Info.Tokens.Input // overwrite each time; last one is current
+		usage.TotalOutput += msg.Info.Tokens.Output
+		usage.TotalReasoning += msg.Info.Tokens.Reasoning
+		usage.CacheRead += msg.Info.Tokens.Cache.Read
+		usage.CacheWrite += msg.Info.Tokens.Cache.Write
+		usage.TotalCost += msg.Info.Cost
 
-		if msg.Model != "" {
-			usage.Model = msg.Model
+		if msg.Info.ModelID != "" {
+			usage.Model = msg.Info.ModelID
 		}
 	}
 

@@ -33,6 +33,7 @@ Never share your bot token or commit it to version control. Anyone with this tok
 1. Navigate to **"OAuth2"** > **"URL Generator"**
 2. Select scopes:
    - `bot`
+   - `applications.commands` (required for slash commands)
 3. Select bot permissions:
    - Send Messages
    - Read Message History

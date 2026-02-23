@@ -306,7 +306,7 @@ func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Always allow setup endpoints and static assets (so the SPA can load)
 			if r.URL.Path == "/api/setup" || r.URL.Path == "/api/setup/status" ||
-				r.URL.Path == "/api/setup/profile" ||
+				r.URL.Path == "/api/setup/profile" || r.URL.Path == "/api/version" ||
 				r.URL.Path == "/setup" || r.URL.Path == "/" ||
 				strings.HasPrefix(r.URL.Path, "/assets/") {
 				next.ServeHTTP(w, r)
