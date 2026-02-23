@@ -555,7 +555,12 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 	}
 
 	var responseText string
+	firstContent := true
 	for resp := range responses {
+		if resp.Content != "" && firstContent {
+			log.Printf("[%s] AI response started for session %s", provider, sessionID)
+			firstContent = false
+		}
 		responseText += resp.Content
 	}
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/open-pact/openpact/internal/chat"
@@ -269,8 +270,32 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 
+	// Show typing indicator while waiting for the AI to respond.
+	// Discord typing indicators last ~10 seconds, so we re-send every 8s
+	// in a background goroutine until the handler returns.
+	stopTyping := make(chan struct{})
+	go func() {
+		// Send initial typing indicator immediately
+		if err := s.ChannelTyping(m.ChannelID); err != nil {
+			log.Printf("Error sending typing indicator: %v", err)
+		}
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopTyping:
+				return
+			case <-ticker.C:
+				if err := s.ChannelTyping(m.ChannelID); err != nil {
+					log.Printf("Error sending typing indicator: %v", err)
+				}
+			}
+		}
+	}()
+
 	// Call the message handler with provider name
 	response, err := handler("discord", m.ChannelID, m.Author.ID, m.Content)
+	close(stopTyping)
 	if err != nil {
 		log.Printf("Error handling message: %v", err)
 		return

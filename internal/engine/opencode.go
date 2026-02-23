@@ -222,9 +222,18 @@ func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Messag
 		}
 		if err := json.Unmarshal(respBody, &msgResp); err == nil && len(msgResp.Parts) > 0 {
 			var text string
+			var thinking string
 			for _, part := range msgResp.Parts {
 				if part.Type == "text" && part.Text != "" {
 					text += part.Text
+				} else if (part.Type == "reasoning" || part.Type == "thinking") && part.Text != "" {
+					thinking += part.Text
+				}
+			}
+			if thinking != "" {
+				responseChan <- Response{
+					Thinking:  thinking,
+					SessionID: sessionID,
 				}
 			}
 			if text != "" {
