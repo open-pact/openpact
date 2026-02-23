@@ -32,7 +32,7 @@ const routes = [
       { path: '', name: 'dashboard', component: DashboardView, meta: { requiresAuth: true, title: 'Dashboard' } },
       { path: 'scripts', name: 'scripts', component: ScriptsView, meta: { requiresAuth: true, title: 'Scripts' } },
       { path: 'scripts/:name', name: 'script-editor', component: ScriptEditorView, meta: { requiresAuth: true, title: 'Script Editor' } },
-      { path: 'sessions', name: 'sessions', component: SessionsView, meta: { requiresAuth: true, title: 'Sessions' } },
+      { path: 'sessions', name: 'sessions', component: SessionsView, meta: { requiresAuth: true, title: 'Sessions', fullScreen: true } },
       { path: 'providers', name: 'providers', component: ProvidersView, meta: { requiresAuth: true, title: 'Providers' } },
       { path: 'secrets', name: 'secrets', component: SecretsView, meta: { requiresAuth: true, title: 'Secrets' } },
       { path: 'engine-auth', name: 'engine-auth', component: EngineAuthView, meta: { requiresAuth: true, title: 'Engine Auth' } },

@@ -5,6 +5,8 @@
   --border-color: #e0dfdf74;
   --background-dark: #18181c;
   --second-background: #FFF;
+  --chat-thinking-bg: #f9fafb;
+  --chat-thinking-border: #e5e7eb;
 }
 
 .dark {
@@ -12,6 +14,8 @@
   --main-content: #1e2025;
   --border-color: #20253578;
   --second-background: #1e293b;
+  --chat-thinking-bg: #1e2430;
+  --chat-thinking-border: #2d3748;
 }
 
 html,
@@ -84,14 +88,10 @@ a:hover {
 // Main content area
 .main-content {
   background: var(--main-content);
-  height: calc(100vh - 0.5rem);
+  height: calc(100vh - 1.3rem);
   border-radius: 10px;
   padding-bottom: 0.2rem;
   overflow-y: hidden;
-}
-
-.dark .main-content {
-  background: rgba(30, 41, 59, var(--un-bg-opacity, 1)) !important;
 }
 
 // Page title reusable class

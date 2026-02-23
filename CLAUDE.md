@@ -105,15 +105,39 @@ engine:
 
 The app reads `openpact.yaml` (or `config.yaml` in workspace). Key env vars: `DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`. Starlark secrets are configured under `starlark.secrets` and can reference env vars with `${VAR}` syntax.
 
-## Admin UI Theme Reference
+## Admin UI Theme Reference — MANDATORY RULES
 
-The admin UI is based on the [YummyAdmin](https://github.com/nicevoice/yummy-admin) theme (Naive UI + Vue 3). The full AI reference document for the theme is at `ai/theme/theme-instructions.md`, and the original theme source is at `ai/theme/YummyAdmin/src/`. Consult these when implementing or modifying admin UI components, layouts, or styling.
+The admin UI is based on the [YummyAdmin](https://github.com/nicevoice/yummy-admin) theme (Naive UI + Vue 3). The original theme source is at `ai/theme/YummyAdmin/src/`. The full AI reference document is at `ai/theme/theme-instructions.md`.
 
-Key conventions:
+### STRICT RULES — DO NOT VIOLATE THESE
+
+**1. NEVER invent CSS values.** Every CSS property value (heights, margins, padding, calc expressions, border-radius, colors) in layout and styling MUST come directly from the theme source files. If a theme file says `height: calc(100vh - 30px)`, use EXACTLY `calc(100vh - 30px)` — do not "adjust" it, round it, or substitute your own calculation. You are not smarter than the theme author. The theme is battle-tested; your custom values are not.
+
+**2. ALWAYS read the theme source FIRST.** Before writing or modifying ANY admin UI component, you MUST:
+   - Find the closest matching component in `ai/theme/YummyAdmin/src/`
+   - Read ALL related theme files (component, layout, styles) completely
+   - Copy the theme's HTML structure, CSS classes, SCSS, and `<style>` blocks verbatim
+   - Only then adapt the `<script>` logic for our data model
+
+**3. NEVER add CSS properties the theme doesn't have.** If the theme's `.main-content` doesn't have `display: flex; flex-direction: column`, do NOT add it. If the theme's `.message-input` only has `background: transparent; border: none; &:focus { outline: none }`, do NOT add `color`, `font-size`, `width`, or `:disabled` styles. Copy what exists. Nothing more.
+
+**4. NEVER change spacing or layout values.** If the theme uses `my-2`, use `my-2` — not `my-1`. If the theme uses `p-3`, use `p-3` — not `p-4 md:p-6`. These values are deliberate design choices that affect the entire layout chain.
+
+**5. Use the theme's exact height calc values.** Key reference values from the theme (do NOT change these):
+   - `main.scss` → `.main-content { height: calc(100vh - 1.3rem); }`
+   - `ChatApp.vue` → `.chat-layout { height: calc(100vh - 30px); }`
+   - `ChatApp.vue` → `.chat-sidebar { height: calc(100vh - 150px); }`
+   - `ChatMessages.vue` → `.messages-box { height: calc(100% - 51px); }`
+   - `default.vue` → `.main-content` div uses class `my-2`
+
+**6. When something looks broken, the fix is to match the theme more closely** — not to invent a new workaround. If heights are wrong, compare every single CSS value against the theme source. The theme already works; divergence from it is always the bug.
+
+### General conventions
 - Page width is controlled at the layout level (`AppLayout.vue`), not per-page — individual pages should NOT set their own `max-width`
 - Uses UnoCSS (with `presetUno`, `presetAttributify`, `presetWind`) for utility classes
 - Dark mode via `dark:` UnoCSS variants and CSS variables in `admin-ui/src/styles/main.scss`
 - Component library: Naive UI (`n-` prefixed components)
+- The Chat page (`SessionsView.vue`) maps to theme's `components/Apps/Chat/` — ChatApp.vue, ChatMessages.vue, ChatList.vue, MessageItem.vue. These are the source of truth for all chat layout and styling.
 
 ## Go Module
 
