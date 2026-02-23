@@ -67,8 +67,9 @@ func workspaceReadTool(basePath string) *Tool {
 }
 
 // workspaceWriteTool creates the workspace_write tool.
-// When a context file (SOUL.md, USER.md, MEMORY.md) is written, the context
-// is automatically reloaded so the system prompt stays current.
+// When a context file (SOUL.md, USER.md, MEMORY.md) or any file under
+// memory/ (daily memory files) is written, the context is automatically
+// reloaded so the system prompt stays current.
 func workspaceWriteTool(basePath string, reloadContext ContextReloader) *Tool {
 	return &Tool{
 		Name:        "workspace_write",
@@ -107,12 +108,16 @@ func workspaceWriteTool(basePath string, reloadContext ContextReloader) *Tool {
 				return nil, fmt.Errorf("failed to create directory: %w", err)
 			}
 
-			if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+			if err := os.WriteFile(fullPath, []byte(content), 0664); err != nil {
 				return nil, fmt.Errorf("failed to write file: %w", err)
 			}
 
-			// Auto-reload context when a context file is written
-			if reloadContext != nil && contextFiles[filepath.Base(fullPath)] {
+			// Auto-reload context when a context file is written.
+			// This includes the root context files (MEMORY.md, SOUL.md, USER.md)
+			// and any file under the memory/ directory (daily memory files).
+			shouldReload := contextFiles[filepath.Base(fullPath)] ||
+				strings.HasPrefix(fullPath, filepath.Join(basePath, "memory")+string(filepath.Separator))
+			if reloadContext != nil && shouldReload {
 				if err := reloadContext(); err != nil {
 					log.Printf("Warning: failed to reload context after writing %s: %v", path, err)
 				}

@@ -36,6 +36,8 @@ chmod 775 /workspace/ai-data
 chmod 775 /workspace/ai-data/memory
 chmod 755 /workspace/ai-data/skills
 chmod 755 /workspace/ai-data/scripts
+# Ensure AI user (openpact-ai, same group) can write files created by either user
+find /workspace/ai-data/memory -type f -exec chmod g+w {} + 2>/dev/null || true
 
 # Symlink OpenCode data dir so auth state persists via the bind-mounted volume.
 ln -sfn /workspace/engine /home/openpact-system/.local/share/opencode
