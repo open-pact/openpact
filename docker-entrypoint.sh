@@ -8,8 +8,10 @@
 # keeping secrets (data dir, config) owner-only.
 
 # Workspace root: system owns, group can traverse
+# Use 755 (not 750) because /workspace is a bind-mounted host directory —
+# 750 would lock out the host user from accessing it for Docker builds.
 chown openpact-system:openpact /workspace
-chmod 750 /workspace
+chmod 755 /workspace
 
 # Ensure workspace subdirectories exist with correct ownership
 mkdir -p /workspace/data/opencode /workspace/memory /workspace/skills /workspace/scripts
