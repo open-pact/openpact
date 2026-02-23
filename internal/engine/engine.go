@@ -20,6 +20,7 @@ type ToolCall struct {
 // Response represents an AI response
 type Response struct {
 	Content   string     `json:"content"`              // Text response
+	Thinking  string     `json:"thinking,omitempty"`   // Thinking/reasoning content
 	ToolCalls []ToolCall `json:"tool_calls"`           // Tool calls to execute
 	Done      bool       `json:"done"`                 // Whether conversation turn is complete
 	SessionID string     `json:"session_id,omitempty"` // Session that generated this response

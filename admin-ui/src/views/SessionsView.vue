@@ -257,6 +257,37 @@ function connectChat(sessionId) {
       case 'connected':
         chatConnected.value = true
         break
+      case 'thinking': {
+        const last = chatMessages.value[chatMessages.value.length - 1]
+        if (last && last.role === 'assistant' && last.streaming) {
+          // Append to existing thinking block or create one
+          const thinkingBlock = last.blocks.find(b => b.kind === 'thinking')
+          if (thinkingBlock) {
+            thinkingBlock.content += msg.content
+          } else {
+            last.blocks.unshift({
+              kind: 'thinking',
+              label: 'Thinking',
+              content: msg.content,
+              expanded: false,
+            })
+          }
+        } else {
+          chatMessages.value.push({
+            role: 'assistant',
+            textContent: '',
+            blocks: [{
+              kind: 'thinking',
+              label: 'Thinking',
+              content: msg.content,
+              expanded: false,
+            }],
+            streaming: true,
+          })
+        }
+        nextTick(() => scrollToBottom())
+        break
+      }
       case 'text': {
         const last = chatMessages.value[chatMessages.value.length - 1]
         if (last && last.role === 'assistant' && last.streaming) {

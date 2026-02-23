@@ -143,6 +143,8 @@ func (h *SessionHandlers) Chat(w http.ResponseWriter, r *http.Request, sessionID
 			continue
 		}
 
+		log.Printf("[admin] Message in session %s: %s", sessionID, msg.Content)
+
 		// Send message to engine
 		ctx := context.Background()
 		responses, err := h.api.Send(ctx, sessionID, []engine.Message{
@@ -154,8 +156,20 @@ func (h *SessionHandlers) Chat(w http.ResponseWriter, r *http.Request, sessionID
 		}
 
 		// Stream response chunks
+		firstContent := true
 		for resp := range responses {
+			if resp.Thinking != "" {
+				if firstContent {
+					log.Printf("[admin] AI response started for session %s", sessionID)
+					firstContent = false
+				}
+				sendMsg(chatMessage{Type: "thinking", Content: resp.Thinking})
+			}
 			if resp.Content != "" {
+				if firstContent {
+					log.Printf("[admin] AI response started for session %s", sessionID)
+					firstContent = false
+				}
 				sendMsg(chatMessage{Type: "text", Content: resp.Content})
 			}
 			if resp.Done {
@@ -167,7 +181,7 @@ func (h *SessionHandlers) Chat(w http.ResponseWriter, r *http.Request, sessionID
 
 // chatMessage is the WebSocket message format for chat.
 type chatMessage struct {
-	Type      string `json:"type"` // "message", "text", "done", "error", "connected"
+	Type      string `json:"type"` // "message", "text", "thinking", "done", "error", "connected"
 	Content   string `json:"content,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 }
