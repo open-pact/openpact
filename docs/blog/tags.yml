@@ -1,0 +1,39 @@
+introduction:
+  label: Introduction
+  permalink: /introduction
+  description: Introductory posts about OpenPact
+
+openpact:
+  label: OpenPact
+  permalink: /openpact
+  description: General OpenPact news and updates
+
+announcement:
+  label: Announcement
+  permalink: /announcement
+  description: Official announcements
+
+beta:
+  label: Beta
+  permalink: /beta
+  description: Beta programme updates
+
+update:
+  label: Update
+  permalink: /update
+  description: Feature and progress updates
+
+features:
+  label: Features
+  permalink: /features
+  description: New feature highlights
+
+chat:
+  label: Chat
+  permalink: /chat
+  description: Chat provider and messaging features
+
+admin:
+  label: Admin
+  permalink: /admin
+  description: Admin UI and management features

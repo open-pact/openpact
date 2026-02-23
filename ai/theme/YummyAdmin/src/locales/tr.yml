@@ -1,0 +1,367 @@
+title: Yummy Admin
+description: Ücretsiz Vue 3 Gösterge Paneli
+direction: ltr
+currencySign: ₺
+home: Ana Sayfa
+not-found: Bulunamadı
+languages:
+  ar: Arapça
+  zn: Çince
+  de: Almanca
+  en: İngilizce
+  fa: Farsça
+  tr: Türkçe
+enums:
+  OrderStatus:
+    Delivered: Teslim Edildi
+    Processing: İşleniyor
+    ReadyToSend: Gönderime Hazır
+    Sent: Gönderildi
+    Submitted: Gönderildi
+  ProductStatus:
+    Active: Aktif
+    Draft: Taslak
+    NotActive: Aktif Değil
+common:
+  403Error: Erişim izniniz yok
+  404Error: 404 Hatası
+  404Message: >-
+    Üzgünüz, aradığınız sayfa mevcut değil, kaldırılmış, adı değiştirilmiş veya
+    geçici olarak kullanılamıyor
+  500Error: 500 Hata
+  500Message: >-
+    Bir şeyler ters gitti. 
+    Sorun devam ederse lütfen daha sonra tekrar deneyin veya yöneticiyle
+    iletişime geçin.
+  actions: Eylemler
+  cancel: İptal etmek
+  confirm: Onaylamak
+  create: Yaratmak
+  currency: TRY
+  date: Tarih
+  day: Gün
+  locale: tr-TR
+  delete: Silmek
+  deleteConfirm: Bu öğeyi sileceğinizden emin misiniz?
+  deletedMessage: Başarıyla silindi
+  goHome: Ana Sayfaya Dön
+  maintenance: BAŞARILI BAKIM
+  maintenanceDetail: |-
+    Şu anda zamanlanmış bakım gerçekleştiriyoruz. 
+    Kısa bir süre sonra çevrimiçi olacağız!
+  month: Ay
+  name: İsim
+  new: Yeni
+  notFound: Bulunamadı
+  oops: Oops sayfası
+  price: Fiyat
+  refresh: Yenile
+  search: Ara
+  settings: Ayarlar
+  status: Durum
+  week: Hafta
+  filter: Filter
+  clearFilter: Filtreyi Temizle
+analyticsDashboard:
+  bounceRate: Hemen Çıkma Oranı
+  views: Görünümler
+  visitors: Ziyaretçiler
+  visits: Ziyaretler
+  pages: Sayfalar
+  source: Kaynak
+brands:
+  brand: Marka
+  create:
+    brandName: İsim
+    buttonTitle: Oluştur
+    image: Resim
+    title: Yeni Marka Oluştur
+    url: URL
+  createButton: Oluştur
+  name: Marka Adı
+  shortName: Kisaltma
+  title: Markalar
+  validations:
+    image: Resim gerekli
+    name: İsim gerekli
+    url: URL gerekli
+button:
+  about: Hakkında
+  back: Geri
+  go: GİT
+  home: Ana Sayfa
+  notifications: Bildirimler
+  toggle_customize: Özelleştirmek
+  toggle_dark: Karanlık modu değiştir
+  toggle_fullscreen: Tam ekranı geçiş
+  toggle_langs: Dil değiştir
+categories:
+  count: Saymak
+  create:
+    buttonTitle: Oluştur
+    categoryName: İsim
+    parent: Üst Kategori
+    title: Yeni Kategori Oluştur
+  createButton: Oluştur
+  createdSucceed: Başarıyla yaratıldı
+  stat: İstatistik
+  title: Kategoriler
+  topCategories: En iyi kategoriler
+  validations:
+    nameRequired: İsim gerekli
+    parentRequired: Üst kategori seçilmedi
+category:
+  name: Kategori
+  productsCount: Produkte Anzahl
+chatApp:
+  call: Arama
+  writeMessage: Mesaj yaz
+colors:
+  color: Renk
+  create:
+    buttonTitle: Oluştur
+    color: Renk
+    name: İsim
+    title: Yeni Renk Oluştur
+  createButton: Yaratmak
+  name: İsim
+  title: Renkler
+  validations:
+    colorRequired: Renk seçilmedi
+    nameRequired: İsim gerekli
+customers:
+  customerName: Müşteri Adı
+  email: Email
+  joinDate: Katılma Tarihi
+  ordersCount: Sipariş Sayısı
+  phone: Telefon
+  title: Müşteriler
+customize:
+  color: Renk
+  flatDesign: Düz tasarım
+  fluid: Akışkan düzeni
+  language: Dil
+  layout: Düzen
+  rtl: RTL Düzeni
+  theme: Tema
+  title: Özelleştir
+dashboard:
+  activeOrders: Aktif Siparişler
+  genderChart:
+    title: Müşterinin Cinsiyeti
+  locationChart:
+    title: Müşterinin Konumu
+  monthlySell: Aylık Satış
+  products: Ürünler
+  recentOrders: Son siparişler
+  registerSource:
+    subtitle: Toplam Kayıtlar
+    title: Kayıt Kaynağı
+  registers: Kayıtlar
+  revenueChart:
+    subtitle: Toplam Gelir Dengesi
+    title: Gelir grafiği
+  sellChart:
+    title: Günlük Satış ve Gelir
+  sells: Satışlar
+  summary: Özet
+  transactions: İşlemler
+  trendingProducts: trend olan Ürünler
+  userPlatforms:
+    subtitle: Toplam kullanıcılar
+    title: Kullanıcı platformları
+  visits: Ziyaretler
+  welcome:
+    congratulations1: siz
+    congratulations2: satışa ulaştınız.
+    greeting_message: |-
+      İyi günler!
+      Seni burada gördüğümüz için mutluyuz.
+    title: Nefis Yöneticisine Hoş Geldiniz
+forgot:
+  button: Kurtar
+  email: Email
+  emailValidation: Email geçerli değil
+  haveNotAccount: Hesabınız yok mu?
+  login: Giriş
+  register: Hesap Oluştur!
+  rememberInfo: Şifreyi Hatırladınız mı?
+  resetPassword: Şifreyi Sıfırla
+  sendEmailSuccess: Email Başarıyla Gönderildi, Lütfen E-postanızı Kontrol Edin
+  title: Şifremi Unuttum
+  username: Kullanıcı Adı
+login:
+  createAccount: Hesap Oluştur!
+  failedMessage: Giriş Başarısız
+  forgetPassword: Şifremi Unuttum
+  haveNotAccount: Hesabınız yok mu?
+  loginButton: Giriş Yap
+  message: Hesabınıza erişmek için lütfen giriş yapın
+  password: Şifre
+  rememberMe: Beni Hatırla
+  skipLogin: Girişi Atla
+  successMessage: Başarıyla Giriş Yapıldı 🎉
+  title: Giriş
+  username: Kullanıcı Adı
+  validations:
+    passwordRequired: Şifre gerekli
+    userNameRequired: Kullanıcı adı girin
+  welcome: Tekrar Hoşgeldiniz!
+menu:
+  accountSettings: Hesap Ayarları
+  analytics: Analitik
+  announcement: Duyuru
+  apps: Uygulamalar
+  authentication: kimlik doğrulama
+  blog: Blog
+  brands: Markalar
+  categories: Kategoriler
+  charts: Grafikler
+  chat: Sohbet
+  colors: Renkler
+  comments: Yorumlar
+  components: Bileşenler
+  createProduct: Ürün Oluştur
+  customers: Müşteriler
+  dashboard: Gösterge Paneli
+  data: Veri Tabloları
+  eCommerce: E-Ticaret
+  error: 500 Hata
+  feedbacks: Geri Bildirimler
+  forgetPassword: Şifremi Unuttum
+  forms: Formlar
+  icons: Simgeler
+  login: Giriş
+  maintenance: Bakım
+  messages: Mesajlar
+  news: Haberler
+  notFound: '404'
+  notifications: Bildirimler
+  orders: Siparişler
+  other: Diğer
+  pages: Sayfalar
+  productManagement: Ürün Yönetimi
+  products: Ürünler
+  productsManagement: Ürün Yönetimi
+  profile: Profil
+  register: Kayıt Ol
+  reviews: İncelemeler
+  settings: Ayarlar
+  sms: SMS
+  support: Destek
+  todo: ToDo
+  typography: Tipografi
+  users: Kullanıcılar
+  websiteSettings: Website Ayarları
+notifications:
+  clear: Hepsini temizlemek
+  empty: Hiçbir bildirim yok
+  title: Bildirimler
+  order: Sipariş
+  security: Güvenlik
+  productStock: Ürün Stoku
+  stats: İstatistikler
+  orderSubmitted: Yeni Sipariş Gönderildi
+  passwordExpire: Şifreniz {count} gün sonra geçersiz olacak
+  customerRegister: "Dün {count} Yeni Müşteri Kayıt Oldu"
+  stockWarning: Ürün stoğu azalıyor
+  orderCanceled: Bir sipariş iptal edildia
+notify:
+  welcome: >-
+    Yummy Admin'e hoş geldiniz! Naive UI ve Vue 3 tabanlı Ücretsiz Admin Paneli,
+    lütfen GitHub'da bir yıldız ⭐️ vererek bu projeyi destekleyin
+orders:
+  customer: Müşteri Adı
+  itemsCount: Öğe sayısı
+products:
+  category: Kategori
+  create:
+    barcode: Barkod
+    brand: Marka
+    category: Kategori
+    description: Açıklama
+    discountedPrice: İndirimli Fiyat
+    imageName: Resim
+    inStock: Stokta
+    keywords: Anahtar Kelimeler
+    media: Medya
+    name: Ürün Adı
+    newKeyword: Yeni Anahtar Kelime
+    price: Fiyat
+    pricing: Fiyatlandırma
+    productInformation: Ürün Bilgisi
+    sku: Stok Kodu
+    title: Ürün Oluştur
+  name: Ürün Adı
+  rate: Oran
+  stock: Stok
+  stoke: Stoke
+profile:
+  changePassword: Şifre değiştir
+  confirmPassword: Şifreyi onaylayın
+  email: E -posta
+  firstName: İlk adı
+  lastName: Soy isim
+  location: Konum
+  newPassword: Yeni Şifre
+  notificationType: Bildirim Türü
+  notificationTypes:
+    newMessage: Yeni Mesaj
+    newOrder: Yeni Sipariş
+    newRegister: Yeni Kayıt
+    outOfStock: Stokta Yok
+  notifications: Bildirimler
+  oldPassword: Eski Şifre
+  personalInfo: Kişisel Bilgi
+  phone: Telefon
+  push: İtmek
+  save: Kaydetmek
+  security: Güvenlik
+  sms: SMS
+  title: Profil
+  username: Kullanıcı adı
+register:
+  button: Kayıt Ol
+  haveAccount: Hesabınız var mı?
+  login: Giriş Yap!
+  password: Şifre
+  successMessage: Başarıyla kayıtlı 🎉
+  title: Kayıt Ol
+  username: Kullanıcı Adı
+reviews:
+  comment: Yorum
+  customer: Müşteri
+  date: Tarih
+  product: Ürün
+  rate: Oran
+support:
+  buyMeCoffee:
+    title: Bana bir kahve ısmarla
+    tooltip: Bir fincan kahve satın alarak bu projeye destek olun.
+  github:
+    title: Github Yıldızı
+    tooltip: Bu projeye ⭐️ Github'da destek verin
+todoApp:
+  completed: Tamamlanmış
+  createGroup:
+    groupTitle: Grup Başlığı
+    taskTitle: Görev Başlığı
+    theme: Tema
+    title: Grup Oluştur
+  createTask: Yeni görev oluştur
+  today: Gügüm
+userMenu:
+  dark: Karanlık
+  en: İngilizce
+  fa: Farsça
+  language: Dil
+  light: Aydınlık
+  logout: Çıkış
+  options: Seçenekler
+  profile: Profil
+  signOut: oturumu Kapat
+  theme: Tema
+charts:
+  notData: Grafik verisi yok
+  unableToDisplay: Grafik görüntülenemiyor
+  loading: Grafik verileri yükleniyor...

@@ -1,0 +1,136 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.15s ease;
+}
+
+.modal {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 2rem;
+  max-width: 440px;
+  width: calc(100% - 2rem);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.2s ease;
+  text-align: center;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #fef3c7;
+  margin-bottom: 1rem;
+}
+
+.icon svg {
+  width: 28px;
+  height: 28px;
+  color: #f59e0b;
+}
+
+.title {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #1a365d;
+  margin: 0 0 0.75rem;
+}
+
+.message {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: #475569;
+  margin: 0 0 1.5rem;
+}
+
+.emailLink {
+  color: #0d9488;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.emailLink:hover {
+  color: #0f766e;
+  text-decoration: underline;
+}
+
+.closeButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a365d;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.6rem 2rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.closeButton:hover {
+  background: #172f52;
+  transform: translateY(-1px);
+}
+
+/* Dark mode */
+:global([data-theme='dark']) .modal {
+  background: #1e293b;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+:global([data-theme='dark']) .icon {
+  background: rgba(245, 158, 11, 0.15);
+}
+
+:global([data-theme='dark']) .title {
+  color: #f1f5f9;
+}
+
+:global([data-theme='dark']) .message {
+  color: #94a3b8;
+}
+
+:global([data-theme='dark']) .emailLink {
+  color: #2dd4bf;
+}
+
+:global([data-theme='dark']) .emailLink:hover {
+  color: #5eead4;
+}
+
+:global([data-theme='dark']) .closeButton {
+  background: #60a5fa;
+  color: #0f172a;
+}
+
+:global([data-theme='dark']) .closeButton:hover {
+  background: #3b82f6;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

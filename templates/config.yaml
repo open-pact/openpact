@@ -1,0 +1,18 @@
+# OpenPact Configuration
+
+engine:
+  type: opencode
+  provider: anthropic  # anthropic, openai, google, ollama, etc.
+  model: claude-sonnet-4-20250514
+
+workspace:
+  path: /workspace
+
+discord:
+  enabled: true
+  allowed_users: []  # User IDs allowed to DM (empty = all)
+  allowed_chans: []  # Channel IDs allowed (empty = all)
+
+starlark:
+  max_execution_ms: 30000  # 30 seconds
+  max_memory_mb: 128

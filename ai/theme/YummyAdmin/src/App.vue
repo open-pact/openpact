@@ -1,0 +1,149 @@
+<script setup lang="ts">
+import {
+  darkTheme,
+  lightTheme,
+  unstableAlertRtl,
+  unstableBadgeRtl,
+  unstableButtonGroupRtl,
+  unstableButtonRtl,
+  unstableCardRtl,
+  unstableCheckboxRtl,
+  unstableCollapseRtl,
+  unstableDataTableRtl,
+  unstableDialogRtl,
+  unstableDrawerRtl,
+  unstableInputRtl,
+  unstableMessageRtl,
+  unstablePaginationRtl,
+  unstableSelectRtl,
+  unstableTreeSelectRtl,
+} from 'naive-ui'
+import scrollbarRtl from 'naive-ui/es/_internal/scrollbar/styles/rtl'
+import { alertRtl } from 'naive-ui/es/alert/styles'
+import { buttonRtl } from 'naive-ui/es/button/styles'
+import { dialogRtl } from 'naive-ui/es/dialog/styles'
+import { drawerRtl } from 'naive-ui/es/drawer/styles'
+import { inputRtl } from 'naive-ui/es/input/styles'
+import { messageRtl } from 'naive-ui/es/message/styles'
+import { tableRtl } from 'naive-ui/es/table/styles'
+import { tagRtl } from 'naive-ui/es/tag/styles'
+
+import themeOverrides, {
+  darkThemeOverrides,
+} from '~/common/theme/theme-overrides'
+import useColors from './composables/useColors'
+
+const layout = useLayoutStore()
+
+const rtlStyles = computed(() => !layout.isRtl? [] : [
+  buttonRtl,
+  tableRtl,
+  inputRtl,
+  messageRtl,
+  alertRtl,
+  scrollbarRtl,
+  tagRtl,
+  dialogRtl,
+  drawerRtl,
+  unstableSelectRtl,
+  unstableTreeSelectRtl,
+  unstableAlertRtl,
+  unstableBadgeRtl,
+  unstableCardRtl,
+  unstableCheckboxRtl,
+  unstableButtonRtl,
+  unstableDialogRtl,
+  unstableDataTableRtl,
+  unstableButtonGroupRtl,
+  unstableInputRtl,
+  unstableCollapseRtl,
+  unstableDrawerRtl,
+  unstableMessageRtl,
+  unstablePaginationRtl,
+])
+
+const customTheme = ref({ ...themeOverrides })
+const customDarkTheme = ref({ ...themeOverrides, ...darkThemeOverrides })
+const { makeLighter } = useColors()
+
+const activeTheme = ref(layout.isDark ? darkTheme : lightTheme)
+watch(
+  () => layout.isDark,
+  (isDark: boolean) => {
+    setTimeout(() => {
+      activeTheme.value = isDark ? darkTheme : lightTheme
+    }, 1)
+  },
+  { immediate: true },
+)
+const activeThemeOverrides = computed(() =>
+  layout.isDark ? customDarkTheme.value : customTheme.value,
+)
+
+watch(
+  () => layout.isRtl,
+  () => {
+    const body = document.querySelector('body') as HTMLElement
+    if (layout.isRtl) body.classList.add('rtl')
+    else body.classList.remove('rtl')
+  },
+  {
+    immediate: true,
+  },
+)
+
+watch(
+  () => layout.themeColor,
+  (newValue: string) => {
+    setThemeColor(newValue)
+  },
+  { immediate: true },
+)
+
+function setThemeColor(newValue: string) {
+  if (newValue === '') 
+    return
+
+  const shade1 = makeLighter(newValue, 0.8)
+  const shade2 = makeLighter(newValue, 0.7)
+  const shade3 = makeLighter(newValue, 0.7)
+
+  document.documentElement.style.setProperty('--primary-color', newValue)
+  document.documentElement.style.setProperty('--primary-color-shade1', shade1)
+  document.documentElement.style.setProperty('--primary-color-shade2', shade2)
+  document.documentElement.style.setProperty('--primary-color-shade3', shade3)
+  
+  if (!customTheme.value.common || !customDarkTheme.value.common) 
+    return
+
+  customTheme.value.common.primaryColor = newValue
+  customTheme.value.common.primaryColorHover = shade1
+  customTheme.value.common.primaryColorPressed = shade2
+  customTheme.value.common.primaryColorSuppl = shade3
+
+  customDarkTheme.value.common.primaryColor = newValue
+  customDarkTheme.value.common.primaryColorHover = shade1
+  customDarkTheme.value.common.primaryColorPressed = shade2
+  customDarkTheme.value.common.primaryColorSuppl = shade3
+  customDarkTheme.value.common.primaryColor = newValue
+}
+
+const placement = computed(() => layout.isRtl ? 'bottom-left' : 'bottom-right')
+</script>
+
+<template>
+  <n-config-provider inline-theme-disabled :theme="activeTheme" :theme-overrides="activeThemeOverrides"
+    :rtl="rtlStyles" :preflight-style-disabled="false">
+    <n-notification-provider :placement="placement">
+      <n-message-provider :placement="placement">
+        <n-dialog-provider>
+          <DarkModeContainer class="z-1" />
+          <RouterView />
+        </n-dialog-provider>
+      </n-message-provider>
+    </n-notification-provider>
+  </n-config-provider>
+</template>
+
+
+<style scoped lang="scss"></style>

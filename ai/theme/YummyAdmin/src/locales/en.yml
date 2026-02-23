@@ -1,0 +1,370 @@
+title: Yummy Admin
+description: Free Vue 3 Dashboard
+direction: ltr
+currencySign: $
+home: Home
+not-found: Not found
+languages:
+  ar: Arabic
+  zn: Chinese
+  de: German
+  en: English
+  fa: Persian
+  tr: Turkish
+enums:
+  OrderStatus:
+    Delivered: Delivered
+    Processing: Processing
+    ReadyToSend: ReadyToSend
+    Sent: Sent
+    Submitted: Submitted
+  ProductStatus:
+    Active: Active
+    Draft: Draft
+    NotActive: NotActive
+common:
+  403Error: You have not Permission to access
+  404Error: 404 Error
+  404Message: >-
+    Sorry but the page you are looking for does not exist, have been removed.
+    name changed or is temporarily unavailable
+  500Error: 500 Error
+  500Message: >-
+    Something went wrong. Please try again later or contact the administrator if
+    the problem persists.
+  actions: Actions
+  cancel: Cancel
+  confirm: Confirm
+  create: Create
+  currency: USD
+  date: Date
+  day: Day
+  delete: Delete
+  deleteConfirm: Are you sure to delete this item?
+  deleteMultipleConfirm: Are you sure to delete selected items?
+  deletedMessage: Deleted Successfully
+  goHome: Back To Home
+  locale: en-US
+  maintenance: Website in under maintenance
+  maintenanceDetail: >-
+    We are currently performing scheduled maintenance. We will be back online
+    shortly!
+  month: Month
+  name: Name
+  new: New
+  notFound: Not Found
+  oops: Oops Page
+  price: Price
+  search: Search
+  status: Status
+  week: Week
+  refresh: Refresh
+  settings: Settings
+  perPage: per page
+  filter: Filter
+  clearFilter: Clear Filters
+
+brands:
+  brand: Brand
+  create:
+    brandName: Name
+    buttonTitle: Create
+    image: Image
+    title: Create New Brand
+    url: Url
+  createButton: Create
+  name: Brand
+  shortName: Short Name
+  title: Brands
+  validations:
+    image: Image is required
+    name: Name is required
+    url: Url is required
+button:
+  about: About
+  back: Back
+  go: GO
+  home: Home
+  notifications: Notifications
+  toggle_dark: Toggle dark mode
+  toggle_fullscreen: Toggle Full Screen
+  toggle_langs: Change languages
+  toggle_notifications: Notifications
+  toggle_customize: Customize
+charts:
+  loading: Loading chart data...
+  notData: No chart data available
+  unableToDisplay: Unable to display chart
+categories:
+  count: Count
+  create:
+    buttonTitle: Create
+    categoryName: Name
+    parent: Parent
+    title: Create New Category
+  createButton: Create
+  createdSucceed: Created Successfully
+  stat: Statistics
+  title: Categories
+  topCategories: Top Categories
+  validations:
+    nameRequired: Name is required
+    parentRequired: Parent Not Selected
+category:
+  name: Category
+  productsCount: Products Count
+chatApp:
+  call: Call
+  writeMessage: Write Message
+colors:
+  color: Color
+  create:
+    buttonTitle: Create
+    color: Color
+    name: Name
+    title: Create New Color
+  createButton: Create
+  name: Name
+  title: Colors
+  validations:
+    colorRequired: Color not selected
+    nameRequired: Name is required
+  deleteMessage: Color deleted successfully!
+  createMessage: New color was added successfully!
+customers:
+  customerName: Customer Name
+  email: Email
+  joinDate: Join Date
+  ordersCount: Orders Count
+  phone: Phone
+  title: Customers
+  points: Points
+  userGroup: UserGroup
+customize:
+  color: Color
+  flatDesign: Flat Design
+  fluid: Fluid Layout
+  language: Language
+  layout: Layout
+  rtl: RTL Layout
+  theme: Theme
+  title: Customize
+dashboard:
+  activeOrders: Active Orders
+  genderChart:
+    title: Customer's Gender
+  locationChart:
+    title: Customer's Location
+  monthlySell: Monthly Sell
+  recentOrders: Recent Orders
+  registerSource:
+    subtitle: Total Registers
+    title: Register Source
+  revenueChart:
+    subtitle: Total Revenue balance
+    title: Revenue Chart
+  sellChart:
+    title: Daily Sell and Revenue
+  summary: Summary
+  transactions: Transactions
+  trendingProducts: Trending Products
+  userPlatforms:
+    subtitle: Total Users
+    title: User Platforms
+  welcome:
+    congratulations1: You reached to
+    congratulations2: sales.
+    greeting_message: Have a nice day! We are happy to see you here.
+    title: Welcome to Yummy Admin
+analyticsDashboard:
+  visitors: Visitors
+  visits: Visits
+  views: Views
+  bounceRate: Bounce Rate
+  summary: Summary
+  pages: Pages
+  source: Source
+forgot:
+  button: Recover
+  email: Email
+  emailValidation: Email is not valid
+  haveNotAccount: Haven't Account?
+  login: Login
+  register: Create One!
+  rememberInfo: Remembered Password?
+  resetPassword: Reset Password
+  sendEmailSuccess: Email Sent Successfully, Please Check Your Email
+  title: Forgot Password
+  username: User Name
+login:
+  createAccount: Create One!
+  failedMessage: Login Failed
+  forgetPassword: Forget Password
+  haveNotAccount: Don't have an account?
+  loginButton: Login
+  message: To access to your account please login here
+  password: Password
+  rememberMe: Remember Me
+  skipLogin: Skip Login
+  successMessage: Logged In Successfully 🎉
+  title: Login
+  username: User Name
+  validations:
+    passwordRequired: Password is required
+    userNameRequired: Enter username
+  welcome: Welcome Back!
+  loginUsing: Login Using
+menu:
+  accountSettings: Account Settings
+  analytics: Analytics
+  announcement: Announcement
+  apps: Apps
+  otherApps: Other Apps
+  authentication: Authentication
+  blog: Blog
+  brands: Brands
+  categories: Categories
+  chat: Chat
+  colors: Colors
+  comments: Comments
+  createProduct: Create Product
+  customers: Customers
+  dashboard: Dashboard
+  eCommerce: eCommerce
+  error: Error Page
+  feedbacks: Feedbacks
+  forgetPassword: Forget Password
+  login: Login
+  maintenance: Maintenance
+  messages: Messages
+  news: News
+  notFound: 404 Not Found
+  notifications: Notifications
+  orders: Orders
+  other: Other
+  pages: Pages
+  productManagement: Products Management
+  products: Products
+  productsManagement: Products Management
+  profile: Profile
+  register: Register
+  reviews: Reviews
+  settings: Settings
+  sms: Sms
+  support: Support
+  todo: ToDo
+  users: Users
+  websiteSettings: Website Settings
+  components: Components
+  charts: Charts
+  forms: Forms
+  data: Data Tables
+  typography: Typography
+  icons: Icons
+notifications:
+  clear: Clear All
+  empty: No notifications
+  title: Notifications
+  order: Order
+  security: Security
+  productStock: Product Stock
+  stats: Stats
+  orderSubmitted: New Order Submitted
+  passwordExpire: Your password will expires in {count} days
+  customerRegister: "{count} New Customers registered yesterday"
+  stockWarning: Product stock is getting low
+  orderCanceled: An order was canceled
+notify:
+  welcome: >-
+    Welcome to Yummy Admin! Free Admin Panel based on NaiveUI and Vue3, please
+    Support this project by giving a star ⭐️ on GitHub
+orders:
+  customer: Customer
+  itemsCount: Items Count
+products:
+  category: Category
+  create:
+    barcode: Barcode
+    brand: Brand
+    category: Category
+    description: Description
+    discountedPrice: Discounted Price
+    imageName: Image
+    inStock: InStock
+    keywords: Keywords
+    media: Media
+    name: Product Name
+    newKeyword: New Keyword
+    price: Price
+    pricing: Pricing
+    productInformation: Product Information
+    sku: SKU
+    title: Create Product
+  name: Product Name
+  rate: Rate
+  stock: stock
+  stoke: Stoke
+  deleteMessage: Product was deleted!
+profile:
+  changePassword: Change Password
+  confirmPassword: Confirm Password
+  email: Email
+  firstName: First Name
+  lastName: Last Name
+  location: Location
+  newPassword: New Password
+  notificationType: Notification Type
+  notificationTypes:
+    newMessage: New Message
+    newOrder: New Order
+    newRegister: New Register
+    outOfStock: Out Of Stock
+  notifications: Notifications
+  oldPassword: Old Password
+  personalInfo: Personal Info
+  phone: Phone
+  push: Push
+  save: Save
+  security: Security
+  sms: Sms
+  title: Profile
+  username: UserName
+register:
+  button: Register
+  haveAccount: Have Account?
+  login: Login!
+  password: Password
+  successMessage: Registered Successfully 🎉
+  title: Register
+  username: User Name
+reviews:
+  comment: Comment
+  customer: Customer
+  date: Date
+  product: Product
+  rate: Rate
+support:
+  buyMeCoffee:
+    title: Buy me coffee
+    tooltip: Support this project by buying me a coffee
+  github:
+    title: Star On Github
+    tooltip: Support this project by giving a star ⭐️ on GitHub
+todoApp:
+  completed: Completed
+  createGroup:
+    groupTitle: Group Title
+    taskTitle: Task Title
+    theme: Theme
+    title: Create Group
+  createTask: Create new task
+  today: Today
+userMenu:
+  dark: Dark
+  language: Language
+  light: Light
+  logout: Logout
+  options: Options
+  profile: Profile
+  signOut: sign out
+  theme: Theme

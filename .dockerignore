@@ -1,0 +1,9 @@
+**/node_modules
+docs/
+.git/
+workspace/
+*.md
+!templates/*.md
+.env
+.env.*
+!.env.sample

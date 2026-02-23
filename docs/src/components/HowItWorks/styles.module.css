@@ -1,0 +1,204 @@
+/**
+ * How It Works Section Styles
+ */
+
+.howItWorks {
+  padding: 5rem 0;
+  background-color: #ffffff;
+}
+
+:global([data-theme='dark']) .howItWorks {
+  background-color: #0f172a;
+}
+
+.sectionHeader {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.sectionTitle {
+  font-size: 2.25rem;
+  font-weight: 700;
+  color: #1a365d;
+  margin-bottom: 1rem;
+}
+
+:global([data-theme='dark']) .sectionTitle {
+  color: #f1f5f9;
+}
+
+.sectionSubtitle {
+  font-size: 1.125rem;
+  color: #64748b;
+  max-width: 600px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+:global([data-theme='dark']) .sectionSubtitle {
+  color: #94a3b8;
+}
+
+.flowContainer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  flex-wrap: wrap;
+  margin-bottom: 3rem;
+}
+
+.flowStepWrapper {
+  display: flex;
+  align-items: center;
+}
+
+.flowStep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  min-width: 100px;
+}
+
+.flowStepIcon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #1a365d 0%, #2d4a7c 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  margin-bottom: 0.75rem;
+  transition: transform 0.2s ease;
+}
+
+.flowStep:hover .flowStepIcon {
+  transform: scale(1.05);
+}
+
+.flowStepLabel {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #1a365d;
+  margin-bottom: 0.25rem;
+}
+
+:global([data-theme='dark']) .flowStepLabel {
+  color: #f1f5f9;
+}
+
+.flowStepDescription {
+  font-size: 0.8125rem;
+  color: #64748b;
+}
+
+:global([data-theme='dark']) .flowStepDescription {
+  color: #94a3b8;
+}
+
+.arrowIcon {
+  color: #0d9488;
+  margin: 0 0.5rem;
+  flex-shrink: 0;
+}
+
+.highlights {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+  padding: 2rem;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border-radius: 12px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+:global([data-theme='dark']) .highlights {
+  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+}
+
+.highlight {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+  color: #334155;
+}
+
+:global([data-theme='dark']) .highlight {
+  color: #e2e8f0;
+}
+
+.highlightIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: #0d9488;
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* Responsive styles */
+@media screen and (max-width: 996px) {
+  .flowContainer {
+    gap: 0.5rem;
+  }
+
+  .flowStep {
+    min-width: 80px;
+  }
+
+  .flowStepIcon {
+    width: 52px;
+    height: 52px;
+  }
+
+  .flowStepIcon svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .arrowIcon {
+    width: 20px;
+    height: 20px;
+    margin: 0 0.25rem;
+  }
+}
+
+@media screen and (max-width: 768px) {
+  .howItWorks {
+    padding: 3rem 1rem;
+  }
+
+  .sectionTitle {
+    font-size: 1.75rem;
+  }
+
+  .flowContainer {
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .flowStepWrapper {
+    flex-direction: column;
+  }
+
+  .arrowIcon {
+    transform: rotate(90deg);
+    margin: 0.5rem 0;
+  }
+
+  .highlights {
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.5rem;
+  }
+}

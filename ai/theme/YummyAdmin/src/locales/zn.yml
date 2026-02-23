@@ -1,0 +1,361 @@
+title: 美味管理系统
+description: 免费的Vue 3仪表板
+currencySign: ¥
+direction: ltr
+home: 首页
+not-found: 未找到
+languages:
+  ar: 阿拉伯语
+  zn: 中文
+  de: 德语
+  en: 英语
+  fa: 波斯语
+  tr: 土耳其语
+enums:
+  OrderStatus:
+    Delivered: 已送达
+    Processing: 处理中
+    ReadyToSend: 准备发货
+    Sent: 已发货
+    Submitted: 已提交
+  ProductStatus:
+    Active: 激活
+    Draft: 草稿
+    NotActive: 未激活
+common:
+  403Error: 您没有访问权限
+  404Error: 404错误
+  404Message: 抱歉，您要查找的页面不存在、已被删除、名称已更改或暂时不可用
+  500Error: 500 Error
+  500Message: 出现错误。请稍后重试；如果问题仍然存在，请联系管理员。
+  actions: 操作
+  cancel: 取消
+  confirm: 确认
+  create: 确认
+  currency: CNY
+  date: 日期
+  day: 天
+  delete: 删除
+  deleteConfirm: 确认删除？
+  deletedMessage: 删除成功
+  goHome: 返回首页
+  locale: zh-CN
+  maintenance: 网站正在维护中
+  maintenanceDetail: 我们目前正在进行定期维护。很快将恢复正常！
+  month: 月
+  name: 姓名
+  new: 新
+  notFound: 未找到
+  oops: Oops Page
+  price: 价格
+  refresh: 刷新
+  search: 搜索
+  settings: 设置
+  status: 状态
+  week: 星期
+  filter: 筛选
+  clearFilter: 清除筛选
+analyticsDashboard:
+  bounceRate: 跳出率
+  summary: 概括
+  views: 浏览
+  visitors: 访客
+  visits: 访问
+  pages: 页面
+  source: 来源
+brands:
+  brand: 品牌
+  create:
+    brandName: 名称
+    buttonTitle: 创建
+    image: 图片
+    title: 创建新品牌
+    url: 网址
+  createButton: 创建
+  name: 名称
+  shortName: 简称
+  title: 品牌
+  validations:
+    image: 图片必填
+    name: 名称必填
+    url: 网址必填
+button:
+  about: 关于
+  back: 返回
+  go: 前往
+  home: 首页
+  notifications: 通知
+  toggle_customize: 定制
+  toggle_dark: 切换深色模式
+  toggle_fullscreen: 全屏
+  toggle_langs: 切换语言
+categories:
+  count: 数数
+  create:
+    buttonTitle: 创建
+    categoryName: 名称
+    parent: 父级
+    title: 创建新分类
+  createButton: 创建
+  createdSucceed: 创建成功
+  stat: 统计
+  title: 分类
+  topCategories: 顶级分类
+  validations:
+    nameRequired: 名称必填
+    parentRequired: 未选择父级
+category:
+  name: 分类
+  productsCount: 产品数量
+chatApp:
+  call: 称呼
+  writeMessage: 写消息
+colors:
+  color: 颜色
+  create:
+    buttonTitle: 创建
+    color: 颜色
+    name: 名称
+    title: 创建新颜色
+  createButton: 创建
+  name: 名称
+  title: 颜色
+  validations:
+    colorRequired: 未选择颜色
+    nameRequired: 名称必填
+customers:
+  customerName: 客户名称
+  email: 电子邮件
+  joinDate: 加入日期
+  ordersCount: 订单数量
+  phone: 电话
+  title: 客户
+customize:
+  color: 颜色
+  flatDesign: 扁平化设计
+  fluid: 流体布局
+  language: 语言
+  layout: 布局
+  rtl: RTL布局
+  theme: 主题
+  title: 定制
+dashboard:
+  activeOrders: 活跃订单
+  genderChart:
+    title: 客户性别
+  locationChart:
+    title: 客户位置
+  monthlySell: 每月销售
+  products: 产品
+  recentOrders: 近期订单
+  registerSource:
+    subtitle: 注册来源
+    title: 注册来源
+  registers: 注册
+  revenueChart:
+    subtitle: 收入
+    title: 收入图表
+  sellChart:
+    title: 每日销售额和收入
+  sells: 销售
+  summary: 概要
+  transactions: 交易
+  trendingProducts: 热门产品
+  userPlatforms:
+    subtitle: 用户平台
+    title: 用户平台
+  visits: 访问
+  welcome:
+    congratulations1: 您的销量已达
+    congratulations2: 份。
+    greeting_message: 祝您有美好的一天！我们很高兴见到您。
+    title: 欢迎回来！
+forgot:
+  button: 恢复
+  email: 电子邮件
+  emailValidation: 电子邮件无效
+  haveNotAccount: 没有账户？
+  login: 登录
+  register: 创建一个！
+  rememberInfo: 记住密码？
+  resetPassword: 重置密码
+  sendEmailSuccess: 电子邮件发送成功，请检查您的电子邮件
+  title: 忘记密码
+  username: 用户名
+login:
+  createAccount: 创建一个！
+  failedMessage: 登录失败
+  forgetPassword: 忘记密码
+  haveNotAccount: 没有账户？
+  loginButton: 登录
+  message: 请在此登录以访问您的账户
+  password: 密码
+  rememberMe: 记住我
+  skipLogin: 跳过登录
+  successMessage: 登录成功 🎉
+  title: 登录
+  username: 用户名
+  validations:
+    passwordRequired: 密码必填
+    userNameRequired: 请输入用户名
+  welcome:
+    congratulations1: 您的销量已达
+    congratulations2: 份。
+    greeting_message: 祝您有美好的一天！我们很高兴见到您。
+    title: 欢迎回来！
+menu:
+  accountSettings: 账户设置
+  analytics: 分析
+  announcement: 公告
+  apps: 应用程序
+  authentication: 验证
+  blog: 博客
+  brands: 品牌
+  categories: 分类
+  charts: 图表
+  chat: 聊天
+  colors: 颜色
+  comments: 评论
+  components: 组件
+  createProduct: 创建产品
+  customers: 客户
+  dashboard: 仪表板
+  data: 数据
+  eCommerce: 电子商务
+  error: 500错误
+  feedbacks: 反馈
+  forgetPassword: 忘记密码
+  forms: 表单
+  icons: 图标
+  login: 登录
+  maintenance: 维护
+  messages: 消息
+  news: 新闻
+  notFound: '404'
+  notifications: 通知
+  orders: 订单
+  other: 其他
+  pages: 页面
+  productManagement: 产品管理
+  products: 产品
+  productsManagement: 产品管理
+  profile: 轮廓
+  register: 注册
+  reviews: 评论
+  settings: 设置
+  sms: 短信
+  support: 支持
+  todo: 待办事项
+  typography: 排版
+  users: 用户
+  websiteSettings: 网站设置
+notifications:
+  clear: 清除所有
+  empty: 没有通知
+  title: 通知
+  order: 订单
+  security: 安全
+  productStock: 产品库存
+  stats: 统计
+  orderSubmitted: 新订单已提交
+  passwordExpire: 您的密码将在 {count} 天后过期
+  customerRegister: "昨天有 {count} 位新客户注册"
+  stockWarning: 产品库存不足
+  orderCanceled: 订单已取消
+notify:
+  welcome: 欢迎使用 YummyAdmin！基于 Naive UI 和 Vue 的免费管理面板，请在 GitHub 上点赞⭐️来支持此项目
+orders:
+  customer: 客户名称
+  itemsCount: 项目数量
+products:
+  category: 分类
+  create:
+    barcode: 条形码
+    brand: 品牌
+    category: 分类
+    description: 描述
+    discountedPrice: 折扣价
+    imageName: 图片
+    inStock: 有库存
+    keywords: 关键词
+    media: 媒体
+    name: 产品名称
+    newKeyword: 新关键词
+    price: 价格
+    pricing: 定价
+    productInformation: 产品信息
+    sku: 库存单位
+    title: 创建产品
+  name: 名称
+  rate: 评分
+  stock: 库存
+  stoke: 库存
+profile:
+  changePassword: 更改密码
+  confirmPassword: 确认密码
+  email: 电子邮件
+  firstName: 名
+  lastName: 姓
+  location: 位置
+  newPassword: 新密码
+  notificationType: 通知类型
+  notificationTypes:
+    newMessage: 新消息
+    newOrder: 新订单
+    newRegister: 新注册
+    outOfStock: 缺货
+  notifications: 通知
+  oldPassword: 旧密码
+  personalInfo: 个人信息
+  phone: 电话
+  push: 推送通知
+  save: 保存
+  security: 安全
+  sms: 短信
+  title: 轮廓
+  username: 用户名
+register:
+  button: 注册
+  haveAccount: 已有账户？
+  login: 登录！
+  password: 密码
+  successMessage: 注册成功 🎉
+  title: 注册
+  username: 用户名
+reviews:
+  comment: 评论
+  customer: 客户
+  date: 日期
+  product: 产品
+  rate: 评分
+support:
+  buyMeCoffee:
+    title: 请我喝杯咖啡
+    tooltip: 购买一杯咖啡来支持这个项目。
+  github:
+    title: Github 星标
+    tooltip: 请在Github上给这个项目一个⭐️支持
+todoApp:
+  completed: 完全的
+  createGroup:
+    groupTitle: 群组标题
+    taskTitle: 任务标题
+    theme: 主题
+    title: 创建组
+  createTask: 创建新任务
+  today: 今天
+userMenu:
+  dark: 深色
+  en: 英语
+  fa: 波斯语
+  language: 语言
+  light: 浅色
+  logout: 退出
+  options: 选项
+  profile: 个人资料
+  signOut: 登出
+  theme: 主题
+charts:
+  loading: 正在加载图表数据...
+  notData: 暂无图表数据
+  unableToDisplay: 无法显示图表

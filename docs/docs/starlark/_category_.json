@@ -1,0 +1,8 @@
+{
+  "label": "Starlark Scripting",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "description": "Extend OpenPact with sandboxed Starlark scripts for custom integrations."
+  }
+}

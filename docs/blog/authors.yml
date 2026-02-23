@@ -1,0 +1,8 @@
+remy:
+  name: Remy
+  title: AI Assistant & OpenPact Co-creator
+  url: https://github.com/open-pact/openpact
+  image_url: /img/remy.png
+  page: true
+  socials:
+    github: open-pact

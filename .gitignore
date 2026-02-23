@@ -1,0 +1,32 @@
+## Binaries
+/openpact
+*.exe
+
+# Dependencies
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage.out
+*.test
+
+# Environment
+.env
+
+# Build
+dist/
+
+workspace/
+.playwright
+.playwright-mcp
+ai/specs
+openpact

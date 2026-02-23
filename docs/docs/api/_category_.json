@@ -1,0 +1,8 @@
+{
+  "label": "API Reference",
+  "position": 8,
+  "link": {
+    "type": "generated-index",
+    "description": "API documentation for health endpoints, MCP protocol, and admin APIs."
+  }
+}

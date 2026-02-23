@@ -1,0 +1,165 @@
+/**
+ * Use Cases Section Styles
+ */
+
+.useCases {
+  padding: 5rem 0;
+  background-color: #f8fafc;
+}
+
+:global([data-theme='dark']) .useCases {
+  background-color: #1e293b;
+}
+
+.sectionHeader {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.sectionTitle {
+  font-size: 2.25rem;
+  font-weight: 700;
+  color: #1a365d;
+  margin-bottom: 1rem;
+}
+
+:global([data-theme='dark']) .sectionTitle {
+  color: #f1f5f9;
+}
+
+.sectionSubtitle {
+  font-size: 1.125rem;
+  color: #64748b;
+  max-width: 600px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+:global([data-theme='dark']) .sectionSubtitle {
+  color: #94a3b8;
+}
+
+.useCaseGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.5rem;
+}
+
+.useCaseCard {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border-top: 4px solid #0d9488;
+}
+
+:global([data-theme='dark']) .useCaseCard {
+  background: #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.useCaseCard:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1),
+    0 8px 10px -6px rgba(0, 0, 0, 0.1);
+}
+
+:global([data-theme='dark']) .useCaseCard:hover {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+}
+
+.useCaseIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 100%);
+  color: #0d9488;
+  margin-bottom: 1.25rem;
+}
+
+:global([data-theme='dark']) .useCaseIcon {
+  background: linear-gradient(135deg, #134e4a 0%, #0f766e 100%);
+  color: #5eead4;
+}
+
+.useCaseTitle {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #1a365d;
+  margin-bottom: 0.5rem;
+}
+
+:global([data-theme='dark']) .useCaseTitle {
+  color: #f1f5f9;
+}
+
+.useCaseDescription {
+  font-size: 0.9375rem;
+  color: #0d9488;
+  font-weight: 500;
+  margin-bottom: 1rem;
+}
+
+:global([data-theme='dark']) .useCaseDescription {
+  color: #2dd4bf;
+}
+
+.useCaseFeatures {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.useCaseFeatures li {
+  font-size: 0.875rem;
+  color: #64748b;
+  padding: 0.4rem 0;
+  padding-left: 1.25rem;
+  position: relative;
+  line-height: 1.4;
+}
+
+:global([data-theme='dark']) .useCaseFeatures li {
+  color: #94a3b8;
+}
+
+.useCaseFeatures li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.7rem;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #0d9488;
+}
+
+/* Responsive styles */
+@media screen and (max-width: 1200px) {
+  .useCaseGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media screen and (max-width: 768px) {
+  .useCases {
+    padding: 3rem 1rem;
+  }
+
+  .sectionTitle {
+    font-size: 1.75rem;
+  }
+
+  .useCaseGrid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .useCaseCard {
+    padding: 1.5rem;
+  }
+}

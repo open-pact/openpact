@@ -1,0 +1,115 @@
+:root {
+  --primary-color: #2db8b3;
+  --background: #EEE;
+  --main-content: #FFF;
+  --border-color: #e0dfdf74;
+  --background-dark: #18181c;
+  --second-background: #FFF;
+}
+
+.dark {
+  --background: var(--background-dark);
+  --main-content: #1e2025;
+  --border-color: #20253578;
+  --second-background: #1e293b;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--background);
+  max-height: 100vh;
+  max-width: 100vw;
+  overflow: hidden;
+
+  &::selection {
+    background: color-mix(in srgb, var(--primary-color), var(--background) 85%);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+a {
+  color: var(--primary-color);
+  text-decoration: none;
+}
+a:hover {
+  color: #2dd7b7;
+}
+
+// Scrollbar (for elements outside NScrollbar)
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.2);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.3);
+}
+
+// Route transitions
+.route-enter-from {
+  opacity: 0;
+  transform: translateY(30px);
+}
+.route-enter-active {
+  transition: all 0.25s ease-out;
+}
+.route-leave-to {
+  opacity: 0;
+  transform: translateY(-30px);
+}
+.route-leave-active {
+  transition: all 0.2s ease-in;
+}
+
+// Main content area
+.main-content {
+  background: var(--main-content);
+  height: calc(100vh - 0.5rem);
+  border-radius: 10px;
+  padding-bottom: 0.2rem;
+  overflow-y: hidden;
+}
+
+.dark .main-content {
+  background: rgba(30, 41, 59, var(--un-bg-opacity, 1)) !important;
+}
+
+// Page title reusable class
+.page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+// Border color utility for Card and other components
+.border-color-default {
+  border-color: var(--border-color);
+}

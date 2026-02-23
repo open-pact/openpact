@@ -1,0 +1,13 @@
+services:
+  openpact:
+    build: .
+    env_file: .env
+    environment:
+      - ADMIN_BIND=0.0.0.0:8080
+    ports:
+      - "8080:8080"   # Admin UI
+      - "8081:8081"   # Health / Prometheus metrics
+      - "1455:1455"   # OpenCode OAuth callback
+    volumes:
+      - ./workspace:/workspace
+    restart: unless-stopped
