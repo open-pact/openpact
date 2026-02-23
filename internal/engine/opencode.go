@@ -34,7 +34,7 @@ func NewOpenCode(cfg Config) (*OpenCode, error) {
 	return &OpenCode{
 		cfg: cfg,
 		client: &http.Client{
-			Timeout: 5 * time.Minute, // Long timeout for AI responses
+			Timeout: 30 * time.Minute, // Long timeout for AI responses
 		},
 	}, nil
 }
