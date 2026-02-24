@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [staging]
+### Added
+- Added rendering of Markdown, and code block in to the "/sessions" page of the admin UI
+
 
 ## [0.2.0] - 2026-02-24 (53.5%)
 ### Added

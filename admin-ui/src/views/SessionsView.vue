@@ -23,6 +23,7 @@ import {
   ChevronForwardOutline,
 } from '@vicons/ionicons5'
 import { Send28Filled as SendIcon } from '@vicons/fluent'
+import MarkdownContent from '@/components/MarkdownContent.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -532,7 +533,8 @@ onBeforeUnmount(() => {
                         <div v-if="block.expanded" class="detail-body">{{ block.content }}</div>
                       </div>
                       <!-- Text -->
-                      <span v-if="msg.textContent" style="white-space: pre-wrap; word-break: break-word;">{{ msg.textContent }}</span>
+                      <MarkdownContent v-if="msg.textContent && msg.role === 'assistant'" :content="msg.textContent" :streaming="!!msg.streaming" />
+                      <span v-else-if="msg.textContent" style="white-space: pre-wrap; word-break: break-word;">{{ msg.textContent }}</span>
                     </div>
                   </template>
 
