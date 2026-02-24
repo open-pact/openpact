@@ -10,6 +10,7 @@ import {
   CodeSlashOutline,
   LockClosedOutline,
   KeyOutline,
+  SettingsOutline,
 } from '@vicons/ionicons5'
 
 const route = useRoute()
@@ -22,6 +23,7 @@ const menuOptions = [
   { label: 'Scripts', key: 'scripts', route: '/scripts', icon: CodeSlashOutline },
   { label: 'Secrets', key: 'secrets', route: '/secrets', icon: LockClosedOutline },
   { label: 'Engine Auth', key: 'engine-auth', route: '/engine-auth', icon: KeyOutline },
+  { label: 'Settings', key: 'settings', route: '/settings', icon: SettingsOutline },
 ]
 
 function renderIcon(icon) {
@@ -48,6 +50,7 @@ function activateCurrentRoute() {
   else if (path.startsWith('/scripts')) selectedMenuKey.value = 'scripts'
   else if (path === '/secrets') selectedMenuKey.value = 'secrets'
   else if (path === '/engine-auth') selectedMenuKey.value = 'engine-auth'
+  else if (path === '/settings') selectedMenuKey.value = 'settings'
   else selectedMenuKey.value = 'dashboard'
 }
 

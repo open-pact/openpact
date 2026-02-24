@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [staging]
 ### Added
 - Added rendering of Markdown, and code block in to the "/sessions" page of the admin UI
+- Added MCP tools so the AI can help the user switch the default model used. It list all available models, and will switch it for them when requested.
+- Added a settings page in the Admin area to switch the default model used in new sessions. 
+### Changed
+- Updated the MCP server from a local standalone server triggered by OpenCode to an endpoint in the orchestrator, and passed it as a remote MCP server with auth token to OpenCode.
+### Fixed
+- Invalid json scheme was being passed for tools. Gemini ignored it, but Claude was stricter. 
 
 
 ## [0.2.0] - 2026-02-24 (53.5%)

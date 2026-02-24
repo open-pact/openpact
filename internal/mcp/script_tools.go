@@ -107,7 +107,7 @@ func scriptRunTool(sandbox *starlark.Sandbox, loader *starlark.Loader, secretPro
 				"args": map[string]interface{}{
 					"type":        "array",
 					"description": "Optional: arguments to pass to the function",
-					"items":       map[string]interface{}{"type": "any"},
+					"items":       map[string]interface{}{},
 				},
 			},
 			"required": []string{"name"},

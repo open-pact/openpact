@@ -72,6 +72,14 @@ type ContextUsage struct {
 	OutputLimit    int     // Model's output limit (0 if unknown)
 }
 
+// ModelInfo describes an available model from a provider.
+type ModelInfo struct {
+	ProviderID string `json:"provider_id"`
+	ModelID    string `json:"model_id"`
+	Context    int    `json:"context_limit"`
+	Output     int    `json:"output_limit"`
+}
+
 // Engine is the interface for AI coding agents
 type Engine interface {
 	// Start initializes the engine (starts opencode serve)
@@ -94,6 +102,11 @@ type Engine interface {
 	AbortSession(id string) error
 	GetMessages(sessionID string, limit int) ([]MessageInfo, error)
 	GetContextUsage(sessionID string) (*ContextUsage, error)
+
+	// Model management
+	ListModels() ([]ModelInfo, error)
+	GetDefaultModel() (provider, model string)
+	SetDefaultModel(provider, model string)
 }
 
 // Config holds engine configuration

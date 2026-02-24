@@ -21,6 +21,7 @@ import EngineAuthView from './views/EngineAuthView.vue'
 import SecretsView from './views/SecretsView.vue'
 import SessionsView from './views/SessionsView.vue'
 import ProvidersView from './views/ProvidersView.vue'
+import SettingsView from './views/SettingsView.vue'
 
 const routes = [
   { path: '/setup', name: 'setup', component: SetupView, meta: { requiresAuth: false } },
@@ -36,6 +37,7 @@ const routes = [
       { path: 'providers', name: 'providers', component: ProvidersView, meta: { requiresAuth: true, title: 'Providers' } },
       { path: 'secrets', name: 'secrets', component: SecretsView, meta: { requiresAuth: true, title: 'Secrets' } },
       { path: 'engine-auth', name: 'engine-auth', component: EngineAuthView, meta: { requiresAuth: true, title: 'Engine Auth' } },
+      { path: 'settings', name: 'settings', component: SettingsView, meta: { requiresAuth: true, title: 'Settings' } },
     ],
   },
 ]

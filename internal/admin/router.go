@@ -136,6 +136,9 @@ func (s *Server) Handler() http.Handler {
 	// AI session management endpoints
 	s.registerSessionRoutes(mux)
 
+	// Model management endpoints
+	s.registerModelRoutes(mux)
+
 	// Provider management endpoints
 	s.registerProviderRoutes(mux)
 
@@ -313,6 +316,25 @@ func (s *Server) registerSessionRoutes(mux *http.ServeMux) {
 	})))
 	mux.HandleFunc("/api/sessions/", s.withAuthWS(sessionGuard(func(w http.ResponseWriter, r *http.Request) {
 		s.aiSessionHandlers.HandleSessionByID(w, r)
+	})))
+}
+
+// registerModelRoutes adds model management routes to a mux.
+func (s *Server) registerModelRoutes(mux *http.ServeMux) {
+	sessionGuard := func(handler func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if s.aiSessionHandlers == nil {
+				http.Error(w, `{"error":"session API not available"}`, http.StatusServiceUnavailable)
+				return
+			}
+			handler(w, r)
+		}
+	}
+	mux.HandleFunc("/api/models/default", s.withAuth(sessionGuard(func(w http.ResponseWriter, r *http.Request) {
+		s.aiSessionHandlers.SetDefaultModel(w, r)
+	})))
+	mux.HandleFunc("/api/models", s.withAuth(sessionGuard(func(w http.ResponseWriter, r *http.Request) {
+		s.aiSessionHandlers.ListModels(w, r)
 	})))
 }
 

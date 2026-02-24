@@ -22,6 +22,9 @@ type SessionAPI interface {
 	DeleteSession(id string) error
 	GetMessages(sessionID string, limit int) ([]engine.MessageInfo, error)
 	Send(ctx context.Context, sessionID string, messages []engine.Message) (<-chan engine.Response, error)
+	ListModels() ([]engine.ModelInfo, error)
+	GetDefaultModel() (string, string)
+	SetDefaultModel(provider, model string) error
 }
 
 // SessionHandlers handles session-related admin API endpoints.
@@ -177,6 +180,65 @@ func (h *SessionHandlers) Chat(w http.ResponseWriter, r *http.Request, sessionID
 			}
 		}
 	}
+}
+
+// ListModels handles GET /api/models
+func (h *SessionHandlers) ListModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	models, err := h.api.ListModels()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	provider, model := h.api.GetDefaultModel()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"models": models,
+		"default": map[string]string{
+			"provider": provider,
+			"model":    model,
+		},
+	})
+}
+
+// SetDefaultModel handles PUT /api/models/default
+func (h *SessionHandlers) SetDefaultModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.Model == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model is required"})
+		return
+	}
+
+	if err := h.api.SetDefaultModel(req.Provider, req.Model); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true,
+		"default": map[string]string{
+			"provider": req.Provider,
+			"model":    req.Model,
+		},
+	})
 }
 
 // chatMessage is the WebSocket message format for chat.

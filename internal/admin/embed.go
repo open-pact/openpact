@@ -132,6 +132,9 @@ func (s *Server) HandlerWithUI() (http.Handler, error) {
 	// AI session management endpoints
 	s.registerSessionRoutes(mux)
 
+	// Model management endpoints
+	s.registerModelRoutes(mux)
+
 	// Provider management endpoints
 	s.registerProviderRoutes(mux)
 

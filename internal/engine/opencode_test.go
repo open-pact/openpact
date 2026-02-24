@@ -2,13 +2,14 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 )
 
 func TestBuildOpenCodeConfig_DisablesBuiltinTools(t *testing.T) {
 	cfg := Config{}
-	config := BuildOpenCodeConfig(cfg)
+	config := BuildOpenCodeConfig(cfg, "test-token")
 
 	tools, ok := config["tools"].(map[string]bool)
 	if !ok {
@@ -25,7 +26,7 @@ func TestBuildOpenCodeConfig_DisablesBuiltinTools(t *testing.T) {
 
 func TestBuildOpenCodeConfig_SetsPermissions(t *testing.T) {
 	cfg := Config{}
-	config := BuildOpenCodeConfig(cfg)
+	config := BuildOpenCodeConfig(cfg, "test-token")
 
 	perms, ok := config["permission"].(map[string]string)
 	if !ok {
@@ -72,20 +73,10 @@ func TestFindMCPBinary_NotFound(t *testing.T) {
 	}
 }
 
-func TestBuildOpenCodeConfig_ConfiguresMCPWhenBinaryExists(t *testing.T) {
-	// Create a fake mcp-server on PATH so auto-discovery works
-	tmpDir := t.TempDir()
-	if err := os.WriteFile(tmpDir+"/mcp-server", []byte("#!/bin/sh\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", tmpDir+":"+origPath)
-	defer os.Setenv("PATH", origPath)
-
-	cfg := Config{
-		WorkDir: "/workspace",
-	}
-	config := BuildOpenCodeConfig(cfg)
+func TestBuildOpenCodeConfig_ConfiguresRemoteMCP(t *testing.T) {
+	cfg := Config{}
+	token := "test-token-abc123"
+	config := BuildOpenCodeConfig(cfg, token)
 
 	mcpSection, ok := config["mcp"].(map[string]interface{})
 	if !ok {
@@ -97,53 +88,40 @@ func TestBuildOpenCodeConfig_ConfiguresMCPWhenBinaryExists(t *testing.T) {
 		t.Fatal("expected openpact MCP server config")
 	}
 
-	if openpact["type"] != "local" {
-		t.Error("expected mcp type to be 'local'")
+	if openpact["type"] != "remote" {
+		t.Errorf("expected mcp type to be 'remote', got %v", openpact["type"])
 	}
 
-	command, ok := openpact["command"].([]string)
-	if !ok || len(command) != 1 {
-		t.Errorf("expected command to be a single-element slice, got %v", command)
+	expectedURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", MCPPort)
+	if openpact["url"] != expectedURL {
+		t.Errorf("expected url %q, got %v", expectedURL, openpact["url"])
 	}
 
-	mcpEnv, ok := openpact["environment"].(map[string]string)
+	headers, ok := openpact["headers"].(map[string]string)
 	if !ok {
-		t.Fatal("expected environment map in MCP config")
+		t.Fatal("expected headers map in MCP config")
 	}
 
-	if mcpEnv["OPENPACT_WORKSPACE_PATH"] != "/workspace" {
-		t.Errorf("expected OPENPACT_WORKSPACE_PATH=/workspace, got %s", mcpEnv["OPENPACT_WORKSPACE_PATH"])
+	expectedAuth := "Bearer " + token
+	if headers["Authorization"] != expectedAuth {
+		t.Errorf("expected Authorization header %q, got %q", expectedAuth, headers["Authorization"])
 	}
 }
 
-func TestBuildOpenCodeConfig_NoMCPWhenBinaryMissing(t *testing.T) {
-	// Empty PATH so mcp-server can't be found
-	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", "")
-	defer os.Setenv("PATH", origPath)
-
+func TestBuildOpenCodeConfig_NoMCPWhenNoToken(t *testing.T) {
 	cfg := Config{}
-	config := BuildOpenCodeConfig(cfg)
+	config := BuildOpenCodeConfig(cfg, "")
 
 	if _, ok := config["mcp"]; ok {
-		t.Error("expected no mcp section when mcp-server binary not found")
+		t.Error("expected no mcp section when no token provided")
 	}
 }
 
 func TestBuildOpenCodeConfig_ValidJSON(t *testing.T) {
-	// Create a fake mcp-server on PATH
-	tmpDir := t.TempDir()
-	if err := os.WriteFile(tmpDir+"/mcp-server", []byte("#!/bin/sh\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", tmpDir+":"+origPath)
-	defer os.Setenv("PATH", origPath)
-
 	cfg := Config{
 		WorkDir: "/workspace",
 	}
-	config := BuildOpenCodeConfig(cfg)
+	config := BuildOpenCodeConfig(cfg, "test-token")
 
 	// Must be valid JSON (this is what gets passed as OPENCODE_CONFIG_CONTENT)
 	data, err := json.Marshal(config)

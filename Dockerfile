@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
     gosu \
+    netcat-openbsd \
     openssh-client \
     nodejs \
     npm \

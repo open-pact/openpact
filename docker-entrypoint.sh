@@ -3,6 +3,11 @@
 #   openpact-system: Runs the orchestrator, admin UI, owns secrets/config
 #   openpact-ai:     Runs OpenCode (AI engine), restricted file access
 #
+# Startup order:
+#   1. Orchestrator starts (as openpact-system) → MCP HTTP server listens on :3100
+#   2. Wait for MCP server to be ready
+#   3. OpenCode starts (as openpact-ai) → connects to MCP server
+#
 # Directory structure:
 #   /workspace/secure/       — SYSTEM-ONLY (config, secrets, system data)
 #   /workspace/engine/       — ENGINE data (OpenCode auth, sessions — AI user needs access)
@@ -63,9 +68,10 @@ chown openpact-system:openpact /workspace/ai-data/SOUL.md /workspace/ai-data/USE
 chmod 644 /workspace/ai-data/SOUL.md /workspace/ai-data/USER.md 2>/dev/null || true
 chmod 664 /workspace/ai-data/MEMORY.md 2>/dev/null || true
 
-# --- Launch OpenCode as openpact-ai with a restart loop ---
+# --- Generate OpenCode config ---
 
-# Generate OpenCode config JSON using Go (single source of truth)
+# Generate OpenCode config JSON using Go (single source of truth).
+# This also writes the MCP auth token to secure/data/mcp_token.
 OC_CONFIG=$(/app/openpact opencode-config)
 if [ $? -ne 0 ]; then
     echo "FATAL: failed to generate OpenCode config" >&2
@@ -85,6 +91,32 @@ done
 # Read optional password from config (the Go binary already loaded it, but
 # we need it for the env var). Use a simple grep since it's YAML.
 OC_PASSWORD=$(grep -oP '^\s*password:\s*\K\S+' /workspace/secure/config.yaml 2>/dev/null || true)
+
+# --- Start orchestrator FIRST (as openpact-system) ---
+# The orchestrator constructor starts the MCP HTTP server on :3100.
+# OpenCode must not start until the MCP server is ready.
+
+gosu openpact-system /app/openpact "$@" &
+ORCHESTRATOR_PID=$!
+
+# Wait for MCP HTTP server to be listening (up to 15 seconds)
+echo "Waiting for MCP HTTP server on port 3100..."
+MCP_READY=0
+for i in $(seq 1 30); do
+    if nc -z 127.0.0.1 3100 2>/dev/null; then
+        MCP_READY=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$MCP_READY" -ne 1 ]; then
+    echo "WARNING: MCP HTTP server not ready after 15s, starting OpenCode anyway"
+else
+    echo "MCP HTTP server ready, starting OpenCode..."
+fi
+
+# --- Launch OpenCode as openpact-ai with a restart loop ---
 
 start_opencode() {
     while true; do
@@ -107,13 +139,16 @@ start_opencode() {
 start_opencode &
 OPENCODE_PID=$!
 
-# Clean up the background loop on exit
+# Clean up both processes on exit
 cleanup() {
     echo "Stopping opencode restart loop (pid $OPENCODE_PID)..."
     kill $OPENCODE_PID 2>/dev/null
+    echo "Stopping orchestrator (pid $ORCHESTRATOR_PID)..."
+    kill $ORCHESTRATOR_PID 2>/dev/null
     wait $OPENCODE_PID 2>/dev/null
+    wait $ORCHESTRATOR_PID 2>/dev/null
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
-# Drop to unprivileged user and start the orchestrator
-exec gosu openpact-system /app/openpact "$@"
+# Wait for orchestrator (main process)
+wait $ORCHESTRATOR_PID

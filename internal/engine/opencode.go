@@ -71,6 +71,8 @@ func (o *OpenCode) Stop() error {
 func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Message) (<-chan Response, error) {
 	o.mu.Lock()
 	systemPrompt := o.systemPrompt
+	provider := o.cfg.Provider
+	model := o.cfg.Model
 	o.mu.Unlock()
 
 	// Extract the last user message
@@ -97,14 +99,14 @@ func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Messag
 	}
 
 	// Add model if configured (API expects an object with providerID + modelID)
-	if o.cfg.Provider != "" && o.cfg.Model != "" {
+	if provider != "" && model != "" {
 		body["model"] = map[string]string{
-			"providerID": o.cfg.Provider,
-			"modelID":    o.cfg.Model,
+			"providerID": provider,
+			"modelID":    model,
 		}
-	} else if o.cfg.Model != "" {
+	} else if model != "" {
 		body["model"] = map[string]string{
-			"modelID": o.cfg.Model,
+			"modelID": model,
 		}
 	}
 
@@ -466,27 +468,96 @@ func (o *OpenCode) getModelLimits(model string) (contextLimit, outputLimit int) 
 		return 0, 0
 	}
 
-	// Parse the nested provider config structure
-	var providers map[string]struct {
-		Models map[string]struct {
-			Limit struct {
-				Context int `json:"context"`
-				Output  int `json:"output"`
-			} `json:"limit"`
-		} `json:"models"`
+	// Parse the config/providers response: { providers: Provider[], default: {...} }
+	var configResp struct {
+		Providers []struct {
+			ID     string `json:"id"`
+			Models map[string]struct {
+				Limit struct {
+					Context int `json:"context"`
+					Output  int `json:"output"`
+				} `json:"limit"`
+			} `json:"models"`
+		} `json:"providers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&providers); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&configResp); err != nil {
 		return 0, 0
 	}
 
 	// Search all providers for the model
-	for _, provider := range providers {
+	for _, provider := range configResp.Providers {
 		if m, ok := provider.Models[model]; ok {
 			return m.Limit.Context, m.Limit.Output
 		}
 	}
 
 	return 0, 0
+}
+
+// ListModels fetches all available models from the OpenCode config API.
+func (o *OpenCode) ListModels() ([]ModelInfo, error) {
+	url := fmt.Sprintf("%s/config/providers", o.baseURL)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	o.setAuth(req)
+
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch providers: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("providers API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Parse the config/providers response: { providers: Provider[], default: {...} }
+	var configResp struct {
+		Providers []struct {
+			ID     string `json:"id"`
+			Models map[string]struct {
+				Limit struct {
+					Context int `json:"context"`
+					Output  int `json:"output"`
+				} `json:"limit"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&configResp); err != nil {
+		return nil, fmt.Errorf("failed to decode providers: %w", err)
+	}
+
+	var models []ModelInfo
+	for _, provider := range configResp.Providers {
+		for modelID, m := range provider.Models {
+			models = append(models, ModelInfo{
+				ProviderID: provider.ID,
+				ModelID:    modelID,
+				Context:    m.Limit.Context,
+				Output:     m.Limit.Output,
+			})
+		}
+	}
+
+	return models, nil
+}
+
+// GetDefaultModel returns the currently configured default provider and model.
+func (o *OpenCode) GetDefaultModel() (provider, model string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.cfg.Provider, o.cfg.Model
+}
+
+// SetDefaultModel updates the default provider and model for new sessions.
+func (o *OpenCode) SetDefaultModel(provider, model string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cfg.Provider = provider
+	o.cfg.Model = model
 }
 
 // waitForReady polls the server until it responds or context is cancelled.
@@ -548,10 +619,16 @@ func FindMCPBinary() (string, error) {
 	return "", fmt.Errorf("mcp-server binary not found (looked next to %s and in PATH)", exe)
 }
 
+// MCPPort is the fixed port for the in-process MCP HTTP server.
+// Must match the port the orchestrator binds on (mcp.MCPPort).
+const MCPPort = 3100
+
 // BuildOpenCodeConfig generates the OpenCode configuration that disables built-in
-// tools and configures our MCP server. Used by the opencode-config subcommand to
-// produce JSON passed via OPENCODE_CONFIG_CONTENT env var.
-func BuildOpenCodeConfig(cfg Config) map[string]interface{} {
+// tools and configures our remote MCP server. Used by the opencode-config subcommand
+// to produce JSON passed via OPENCODE_CONFIG_CONTENT env var.
+//
+// mcpToken is the bearer token for authenticating with the MCP HTTP server.
+func BuildOpenCodeConfig(cfg Config, mcpToken string) map[string]interface{} {
 	config := map[string]interface{}{
 		// Disable ALL built-in filesystem/shell tools
 		"tools": map[string]bool{
@@ -565,23 +642,17 @@ func BuildOpenCodeConfig(cfg Config) map[string]interface{} {
 		},
 	}
 
-	// Auto-discover the MCP server binary
-	mcpBinary, err := FindMCPBinary()
-	if err != nil {
-		log.Printf("WARNING: %v — AI will have no tools available", err)
+	if mcpToken == "" {
+		log.Printf("WARNING: no MCP token provided — AI will have no tools available")
 		return config
-	}
-
-	mcpEnv := map[string]string{
-		"OPENPACT_WORKSPACE_PATH": cfg.WorkDir,
 	}
 
 	config["mcp"] = map[string]interface{}{
 		"openpact": map[string]interface{}{
-			"type":        "local",
-			"command":     []string{mcpBinary},
-			"environment": mcpEnv,
-			"enabled":     true,
+			"type":    "remote",
+			"url":     fmt.Sprintf("http://127.0.0.1:%d/mcp", MCPPort),
+			"headers": map[string]string{"Authorization": "Bearer " + mcpToken},
+			"enabled": true,
 		},
 	}
 

@@ -147,7 +147,7 @@ The Admin UI includes the following pages:
 | Setup | `/setup` | First-run configuration (only available once) |
 | Login | `/login` | Username and password authentication |
 | Dashboard | `/` | Overview statistics, pending scripts alert |
-| Sessions | `/sessions` | Manage AI conversation sessions (create, switch, delete, chat) |
+| Sessions | `/sessions` | Manage AI conversation sessions (create, switch, delete, chat) and change the default AI model |
 | Scripts | `/scripts` | List all scripts with status badges |
 | Script Editor | `/scripts/:name` | View, edit, approve, reject, and test scripts |
 | Secrets | `/secrets` | Manage API keys and credentials |

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +36,11 @@ type Orchestrator struct {
 	engine        engine.Engine
 	scriptStore   *admin.ScriptStore // Script approval store (optional)
 	providerStore *admin.ProviderStore
+	modelStore    *admin.ModelPreferenceStore
+
+	// MCP HTTP server (in-process, remote transport for OpenCode)
+	mcpHTTPServer *http.Server
+	mcpToken      string
 
 	// Dynamic provider management
 	providerMu     sync.RWMutex
@@ -115,6 +122,7 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		AIDataDir:     cfg.Workspace.AIDataDir(),
 		ReloadContext: o.ReloadContext,
 		Chat:          o,
+		Models:        o,
 		Allowlist:     cfg.Admin.Allowlist,
 	}
 
@@ -197,6 +205,21 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	}
 
 	o.engine = eng
+
+	// Initialize model preference store and apply saved preference
+	o.modelStore = admin.NewModelPreferenceStore(cfg.Workspace.DataDir())
+	if pref, err := o.modelStore.Get(); err != nil {
+		log.Printf("Warning: failed to load model preference: %v", err)
+	} else if pref != nil {
+		eng.SetDefaultModel(pref.Provider, pref.Model)
+		log.Printf("Restored default model: %s/%s", pref.Provider, pref.Model)
+	}
+
+	// Start MCP HTTP server immediately so it's ready before OpenCode connects.
+	// Tools are already registered above, so the server can serve requests.
+	if err := o.startMCPHTTPServer(); err != nil {
+		return nil, fmt.Errorf("failed to start MCP HTTP server: %w", err)
+	}
 
 	return o, nil
 }
@@ -464,6 +487,13 @@ func (o *Orchestrator) shutdown() error {
 	if o.engine != nil {
 		if err := o.engine.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("engine stop: %w", err))
+		}
+	}
+
+	// Stop MCP HTTP server
+	if o.mcpHTTPServer != nil {
+		if err := o.mcpHTTPServer.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("mcp http stop: %w", err))
 		}
 	}
 
@@ -766,6 +796,87 @@ func formatContextUsage(sessionID string, usage *engine.ContextUsage) string {
 	}
 
 	return b.String()
+}
+
+// startMCPHTTPServer starts the MCP HTTP server so it's ready before OpenCode connects.
+// Called from New() to ensure the server is listening before the entrypoint launches OpenCode.
+func (o *Orchestrator) startMCPHTTPServer() error {
+	mcpToken, err := o.loadOrGenerateMCPToken()
+	if err != nil {
+		return fmt.Errorf("failed to get MCP token: %w", err)
+	}
+	o.mcpToken = mcpToken
+
+	mcpMux := http.NewServeMux()
+	mcpMux.Handle("/mcp", mcp.BearerTokenMiddleware(mcpToken, o.mcpServer.HTTPHandler()))
+
+	addr := fmt.Sprintf("127.0.0.1:%d", mcp.MCPPort)
+	o.mcpHTTPServer = &http.Server{
+		Addr:    addr,
+		Handler: mcpMux,
+	}
+
+	// Use a listener to guarantee the port is open before returning
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+
+	go func() {
+		if err := o.mcpHTTPServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("MCP HTTP server error: %v", err)
+		}
+	}()
+
+	log.Printf("MCP HTTP server listening on %s", ln.Addr().String())
+	return nil
+}
+
+// closeMCPHTTPServer shuts down the MCP HTTP server if running.
+func (o *Orchestrator) closeMCPHTTPServer() {
+	if o.mcpHTTPServer != nil {
+		o.mcpHTTPServer.Close()
+	}
+}
+
+// loadOrGenerateMCPToken reads the MCP token from secure/data/mcp_token.
+// If the file doesn't exist (e.g. in dev mode), it generates a fresh token.
+func (o *Orchestrator) loadOrGenerateMCPToken() (string, error) {
+	tokenPath := filepath.Join(o.cfg.Workspace.DataDir(), "mcp_token")
+	data, err := os.ReadFile(tokenPath)
+	if err == nil && len(data) > 0 {
+		token := strings.TrimSpace(string(data))
+		log.Printf("Loaded MCP token from %s", tokenPath)
+		return token, nil
+	}
+
+	// No persisted token — generate one (dev mode)
+	token, err := mcp.GenerateToken()
+	if err != nil {
+		return "", err
+	}
+	log.Printf("Generated ephemeral MCP token (no token file at %s)", tokenPath)
+	return token, nil
+}
+
+// ListModels returns all available models from the engine.
+func (o *Orchestrator) ListModels() ([]engine.ModelInfo, error) {
+	return o.engine.ListModels()
+}
+
+// GetDefaultModel returns the current default provider and model.
+func (o *Orchestrator) GetDefaultModel() (string, string) {
+	return o.engine.GetDefaultModel()
+}
+
+// SetDefaultModel updates the default model on the engine and persists to disk.
+func (o *Orchestrator) SetDefaultModel(provider, model string) error {
+	o.engine.SetDefaultModel(provider, model)
+	if err := o.modelStore.Set(provider, model); err != nil {
+		return fmt.Errorf("failed to persist model preference: %w", err)
+	}
+	log.Printf("Default model set to %s/%s", provider, model)
+	return nil
 }
 
 // ReloadContext reloads context files (SOUL, USER, MEMORY)

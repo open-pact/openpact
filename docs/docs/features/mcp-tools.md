@@ -224,6 +224,68 @@ This tool is for proactive messaging. Normal conversation responses don't requir
 
 ---
 
+### Model Tools
+
+Tools for viewing available AI models and changing the default model used for new sessions.
+
+#### model_list
+
+List all available AI models grouped by provider, showing the current default.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| - | - | - | No parameters |
+
+**Example:**
+```json
+{
+  "name": "model_list",
+  "arguments": {}
+}
+```
+
+**Returns:** Models grouped by provider with context/output limits, current default marked.
+
+---
+
+#### model_set_default
+
+Set the default AI model for new sessions. Supports fuzzy matching — you can use a partial model name (e.g. "opus" or "sonnet") and the provider will be inferred automatically.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `model` | string | Yes | Model ID or partial name to match (e.g. `"claude-sonnet-4-20250514"` or `"opus"`) |
+| `provider` | string | No | Provider ID (e.g. `"anthropic"`). Inferred from model match if omitted. |
+
+**Example (exact):**
+```json
+{
+  "name": "model_set_default",
+  "arguments": {
+    "model": "claude-opus-4-20250514",
+    "provider": "anthropic"
+  }
+}
+```
+
+**Example (fuzzy):**
+```json
+{
+  "name": "model_set_default",
+  "arguments": {
+    "model": "opus"
+  }
+}
+```
+
+**Returns:** Confirmation with the matched model's full ID and limits, or an error with suggestions if the match is ambiguous or not found.
+
+:::note
+Changing the default model only affects **new sessions**. Existing sessions continue using the model they were started with.
+:::
+
+---
+
 ### Calendar Tools
 
 #### calendar_read
@@ -546,6 +608,8 @@ Reload scripts from disk.
 | `memory_read` | Memory | Read memory files |
 | `memory_write` | Memory | Write to memory files |
 | `chat_send` | Communication | Send messages via any chat provider |
+| `model_list` | Models | List available AI models |
+| `model_set_default` | Models | Change the default model for new sessions |
 | `calendar_read` | Calendar | Read calendar events |
 | `vault_read` | Vault | Read Obsidian notes |
 | `vault_write` | Vault | Write Obsidian notes |

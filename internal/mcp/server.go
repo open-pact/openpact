@@ -95,8 +95,9 @@ func (s *Server) Stop() {
 	s.running = false
 }
 
-// handleRequest processes a single MCP request
-func (s *Server) handleRequest(ctx context.Context, req Request) {
+// processRequest processes a single MCP request and returns the response.
+// Used by both the stdio path (handleRequest) and the HTTP handler.
+func (s *Server) processRequest(ctx context.Context, req Request) Response {
 	var resp Response
 	resp.ID = req.ID
 	resp.JSONRPC = "2.0"
@@ -123,6 +124,12 @@ func (s *Server) handleRequest(ctx context.Context, req Request) {
 		}
 	}
 
+	return resp
+}
+
+// handleRequest processes a single MCP request (stdio path).
+func (s *Server) handleRequest(ctx context.Context, req Request) {
+	resp := s.processRequest(ctx, req)
 	s.sendResponse(resp)
 }
 

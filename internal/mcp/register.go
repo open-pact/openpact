@@ -17,6 +17,7 @@ type RegistrationConfig struct {
 	GitHub        *GitHubConfig     // nil if not configured
 	Script        *ScriptRegistrationConfig // nil if not configured
 	Chat          ChatProviderLookup        // nil for standalone mode
+	Models        ModelLookup               // nil for standalone mode
 	Allowlist     []string          // Script allowlist for admin
 }
 
@@ -92,6 +93,11 @@ func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 	// Chat tools
 	if cfg.Chat != nil {
 		RegisterChatTools(srv, cfg.Chat)
+	}
+
+	// Model tools
+	if cfg.Models != nil {
+		RegisterModelTools(srv, cfg.Models)
 	}
 }
 

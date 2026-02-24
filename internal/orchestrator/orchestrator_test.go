@@ -27,6 +27,7 @@ func TestNewOrchestrator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
+	defer o.closeMCPHTTPServer()
 
 	if o.cfg != cfg {
 		t.Error("config not set correctly")
@@ -67,6 +68,7 @@ func TestNewOrchestratorWithDiscordNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
+	defer o.closeMCPHTTPServer()
 
 	// No providers should be running since tokens were not set in env
 	if len(o.providers) != 0 {
@@ -93,6 +95,7 @@ func TestOrchestratorDoubleStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
+	defer o.closeMCPHTTPServer()
 
 	// Manually set running state
 	o.mu.Lock()
@@ -125,6 +128,7 @@ func TestOrchestratorStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
+	defer o.closeMCPHTTPServer()
 
 	// Stop should be safe to call even before start
 	o.Stop()
@@ -150,6 +154,7 @@ func TestOrchestratorReloadContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
+	defer o.closeMCPHTTPServer()
 
 	// Reload should work even with empty workspace
 	err = o.ReloadContext()

@@ -831,6 +831,95 @@ Messages are streamed incrementally as `text` events, followed by a `done` event
 
 ---
 
+## Model Endpoints
+
+Model endpoints allow viewing available AI models and changing the default model used for new sessions. The preference is persisted to disk and survives restarts.
+
+### GET /api/models
+
+List all available models and the current default.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+
+```json
+{
+  "models": [
+    {
+      "provider_id": "anthropic",
+      "model_id": "claude-sonnet-4-20250514",
+      "context_limit": 200000,
+      "output_limit": 16000
+    },
+    {
+      "provider_id": "anthropic",
+      "model_id": "claude-opus-4-20250514",
+      "context_limit": 200000,
+      "output_limit": 32000
+    },
+    {
+      "provider_id": "openai",
+      "model_id": "gpt-4o",
+      "context_limit": 128000,
+      "output_limit": 16384
+    }
+  ],
+  "default": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514"
+  }
+}
+```
+
+### PUT /api/models/default
+
+Set the default model for new sessions.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+
+```json
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-20250514"
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "default": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-20250514"
+  }
+}
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 400 | `model` field is missing |
+
+:::note
+Changing the default model only affects new sessions. Existing sessions continue using the model they were started with.
+:::
+
+---
+
 ## Error Responses
 
 All error responses follow a consistent format:
