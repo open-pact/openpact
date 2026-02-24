@@ -15,10 +15,10 @@ function ComingSoonBanner() {
   return (
     <div className={styles.comingSoonBanner}>
       <div className="container">
-        <span className={styles.comingSoonBadge}>Coming Soon</span>
+        <span className={styles.comingSoonBadge}>Beta</span>
         <p className={styles.comingSoonText}>
-          OpenPact is currently in <strong>Beta</strong> and is not yet publicly available.
-          Interested in beta testing? Email us at{' '}
+          OpenPact is currently in <strong>Beta</strong> and is open for testing!
+          Have feedback or questions? Email us at{' '}
           <a href="mailto:hello@openpact.ai" className={styles.comingSoonLink}>
             hello@openpact.ai
           </a>

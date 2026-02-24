@@ -5,6 +5,10 @@ sidebar_position: 1
 
 # Introduction to OpenPact
 
+:::caution Early Release
+OpenPact is in early beta and is open for testing. APIs, configuration, and features are subject to change as the project evolves. We welcome feedback at [hello@openpact.ai](mailto:hello@openpact.ai).
+:::
+
 OpenPact is a secure, minimal framework for running your own AI assistant. Built in Go and designed with security as the top priority, it gives you complete control over what your AI can access while keeping your data private.
 
 

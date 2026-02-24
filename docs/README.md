@@ -1,4 +1,6 @@
-# Website
+# OpenPact Documentation
+
+> **Early Release:** OpenPact is in early beta. APIs, configuration, and features are subject to change. We welcome feedback at [hello@openpact.ai](mailto:hello@openpact.ai).
 
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 

@@ -63,6 +63,10 @@ const config: Config = {
     ],
   ],
 
+  plugins: [
+    'docusaurus-plugin-image-zoom',
+  ],
+
   themes: [
     [
       '@easyops-cn/docusaurus-search-local',
@@ -148,6 +152,16 @@ const config: Config = {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
       additionalLanguages: ['bash', 'yaml', 'go', 'python', 'docker'],
+    },
+    zoom: {
+      selector: '.markdown img',
+      background: {
+        light: 'rgb(255, 255, 255)',
+        dark: 'rgb(50, 50, 50)',
+      },
+      config: {
+        margin: 60,
+      },
     },
   } satisfies Preset.ThemeConfig,
 };
