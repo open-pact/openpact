@@ -151,6 +151,10 @@ OpenPact registers slash commands with Discord for session management. These all
 | `/sessions` | List all sessions with active indicator | None |
 | `/switch` | Switch to an existing session | `session_id` (required) |
 | `/context` | Show context window usage for the current session | None |
+| `/mode-simple` | Set detail mode to text only (default) | None |
+| `/mode-thinking` | Set detail mode to show thinking blocks | None |
+| `/mode-tools` | Set detail mode to show tool call details | None |
+| `/mode-full` | Set detail mode to show thinking and tool calls | None |
 
 ### Session Management
 
@@ -193,6 +197,64 @@ OpenPact uses [per-channel sessions](./chat-providers#per-channel-sessions) — 
   Total output: 7.1k tokens (2.3k reasoning)
   Cache: 25.0k read / 8.5k write
   Cost: $0.0832
+```
+
+## Detail Mode
+
+By default, Discord responses show only the AI's text reply. Detail mode lets you see what's happening behind the scenes — the AI's thinking process and which tools it uses — displayed as rich Discord embeds.
+
+### Modes
+
+| Mode | Command | Shows |
+|------|---------|-------|
+| **Simple** | `/mode-simple` | Text only (default) |
+| **Thinking** | `/mode-thinking` | Text + thinking blocks (purple embeds) |
+| **Tools** | `/mode-tools` | Text + tool call details (orange embeds) |
+| **Full** | `/mode-full` | Text + thinking + tool calls |
+
+![Discord thinking mode showing purple thinking embeds and orange tool embeds](/img/discord-thinking-mode.png)
+
+### How It Works
+
+- Thinking blocks appear as **purple embeds** with the AI's reasoning process
+- Tool calls appear as **orange embeds** showing the tool name, input, and output
+- Each channel has its own independent mode setting
+- Mode is persisted to disk and survives restarts
+- Embeds respect Discord limits (4096 chars per embed, 10 embeds per message)
+
+### Examples
+
+**Enable full detail mode:**
+```
+/mode-full
+→ Detail mode set to full — responses will include thinking blocks and tool call details.
+```
+
+**See just the thinking process:**
+```
+/mode-thinking
+→ Detail mode set to thinking — responses will include thinking blocks.
+```
+
+**Return to simple text-only responses:**
+```
+/mode-simple
+→ Detail mode set to simple — responses will show text only.
+```
+
+### Admin API
+
+Detail mode can also be controlled remotely via the admin API:
+
+```bash
+# List modes for all Discord channels
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/providers/discord/mode
+
+# Set mode for a specific channel
+curl -X PUT -H "Authorization: Bearer $TOKEN" \
+  -d '{"channel_id": "123456789", "mode": "full"}' \
+  http://localhost:8080/api/providers/discord/mode
 ```
 
 ## Proactive Messaging with chat_send

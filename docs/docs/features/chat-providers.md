@@ -11,7 +11,7 @@ OpenPact supports multiple chat platforms simultaneously through a unified provi
 
 | Provider | Library | Connection | Commands |
 |----------|---------|------------|----------|
-| **Discord** | discordgo | WebSocket | Slash commands (`/new`, `/sessions`, `/switch`, `/context`) |
+| **Discord** | discordgo | WebSocket | Slash commands (`/new`, `/sessions`, `/switch`, `/context`, `/mode-*`) |
 | **Telegram** | go-telegram-bot-api | Long polling | Bot commands (`/new`, `/sessions`, `/switch`, `/context`) |
 | **Slack** | slack-go | Socket Mode | Slash commands (`/openpact-new`, `/openpact-context`, etc.) |
 
@@ -54,7 +54,7 @@ Each `(provider, channelID)` pair gets its own independent session. This means:
 - Two Discord channels each maintain their own session and history
 - The `/switch` command only affects the channel where it was issued
 
-Session mappings are persisted to `<DataDir>/channel_sessions.json`:
+Session mappings are persisted to `<DataDir>/channel_sessions.json`, and detail mode settings to `<DataDir>/channel_modes.json`:
 
 ```json
 {
@@ -80,6 +80,7 @@ All providers support the same commands:
 | List sessions | `/sessions` | `/sessions` | `/openpact-sessions` | Show all sessions |
 | Switch session | `/switch <id>` | `/switch <id>` | `/openpact-switch <id>` | Switch to existing session |
 | Context usage | `/context` | `/context` | `/openpact-context` | Show context window usage |
+| Detail mode | `/mode-simple`, `/mode-thinking`, `/mode-tools`, `/mode-full` | `/mode-simple`, etc. | — | Control response detail level ([Discord docs](./discord-integration#detail-mode)) |
 
 ## Source Context
 

@@ -6,9 +6,11 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### Added
 - Added rendering of Markdown, and code block in to the "/sessions" page of the admin UI
 - Added MCP tools so the AI can help the user switch the default model used. It list all available models, and will switch it for them when requested.
-- Added a settings page in the Admin area to switch the default model used in new sessions. 
-- Added the ability to additionally fetch tools as part of the streaming messages in the admin UI. Tools by default aren't streamed, and only appear in the history once a page is refreshed. 
-- Added full streaming of text and tools with updates from the AI into the session pages. 
+- Added a settings page in the Admin area to switch the default model used in new sessions.
+- Added the ability to additionally fetch tools as part of the streaming messages in the admin UI. Tools by default aren't streamed, and only appear in the history once a page is refreshed.
+- Added full streaming of text and tools with updates from the AI into the session pages.
+- Added Discord detail mode slash commands (`/mode-simple`, `/mode-thinking`, `/mode-tools`, `/mode-full`) to control the level of detail shown in Discord responses. Thinking blocks appear as purple embeds, tool calls as orange embeds. Mode is persisted per-channel to `channel_modes.json`.
+- Added admin API endpoints (`GET/PUT /api/providers/:name/mode`) for remote control of per-channel detail modes.
 ### Changed
 - Updated the MCP server from a local standalone server triggered by OpenCode to an endpoint in the orchestrator, and passed it as a remote MCP server with auth token to OpenCode.
 ### Fixed
