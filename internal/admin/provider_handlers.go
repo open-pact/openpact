@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/open-pact/openpact/internal/chat"
 )
 
 // ProviderManagerAPI is the interface the orchestrator implements for provider lifecycle management.
@@ -13,6 +15,13 @@ type ProviderManagerAPI interface {
 	RestartProvider(name string) error
 	GetProviderStatus(name string) (ProviderStatusInfo, error)
 	ListProviderStatuses() map[string]ProviderStatusInfo
+}
+
+// ChannelModeAPI is the interface for managing per-channel detail modes.
+type ChannelModeAPI interface {
+	GetChannelMode(provider, channelID string) string
+	SetChannelMode(provider, channelID, mode string)
+	ListChannelModes() map[string]string
 }
 
 // ProviderStatusInfo mirrors the orchestrator type for use in admin handlers.
@@ -25,6 +34,7 @@ type ProviderStatusInfo struct {
 type ProviderHandlers struct {
 	store   *ProviderStore
 	manager ProviderManagerAPI
+	modes   ChannelModeAPI
 }
 
 // NewProviderHandlers creates new provider handlers.
@@ -35,6 +45,11 @@ func NewProviderHandlers(store *ProviderStore) *ProviderHandlers {
 // SetManager sets the provider manager (called after orchestrator is created).
 func (h *ProviderHandlers) SetManager(manager ProviderManagerAPI) {
 	h.manager = manager
+}
+
+// SetModeAPI sets the channel mode API (called after orchestrator is created).
+func (h *ProviderHandlers) SetModeAPI(api ChannelModeAPI) {
+	h.modes = api
 }
 
 // providerResponse is the API response for a single provider.
@@ -107,6 +122,16 @@ func (h *ProviderHandlers) HandleProviderByName(w http.ResponseWriter, r *http.R
 			return
 		}
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	case "/mode":
+		switch r.Method {
+		case http.MethodGet:
+			h.GetChannelModes(w, r, name)
+		case http.MethodPut:
+			h.SetChannelMode(w, r, name)
+		default:
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		}
 		return
 	case "":
 		// Fall through to standard CRUD
@@ -242,6 +267,56 @@ func (h *ProviderHandlers) RestartProvider(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// GetChannelModes handles GET /api/providers/:name/mode.
+func (h *ProviderHandlers) GetChannelModes(w http.ResponseWriter, r *http.Request, provider string) {
+	if h.modes == nil {
+		http.Error(w, `{"error":"channel mode API not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	allModes := h.modes.ListChannelModes()
+	prefix := provider + ":"
+	result := make(map[string]string)
+	for key, mode := range allModes {
+		if strings.HasPrefix(key, prefix) {
+			channelID := strings.TrimPrefix(key, prefix)
+			result[channelID] = mode
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"modes": result})
+}
+
+// SetChannelMode handles PUT /api/providers/:name/mode.
+func (h *ProviderHandlers) SetChannelMode(w http.ResponseWriter, r *http.Request, provider string) {
+	if h.modes == nil {
+		http.Error(w, `{"error":"channel mode API not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		ChannelID string `json:"channel_id"`
+		Mode      string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.ChannelID == "" {
+		http.Error(w, `{"error":"channel_id required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if !chat.ValidMode(req.Mode) {
+		http.Error(w, `{"error":"invalid mode, must be: simple, thinking, tools, or full"}`, http.StatusBadRequest)
+		return
+	}
+
+	h.modes.SetChannelMode(provider, req.ChannelID, req.Mode)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "mode": req.Mode})
 }
 
 func (h *ProviderHandlers) buildProviderResponse(name string, statuses map[string]ProviderStatusInfo) providerResponse {

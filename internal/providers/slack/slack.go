@@ -173,8 +173,8 @@ func (b *Bot) handleEventsAPI(event slackevents.EventsAPIEvent) {
 			log.Printf("Error handling Slack message: %v", err)
 			return
 		}
-		if response != "" {
-			if _, _, err := b.client.PostMessage(ev.Channel, slacklib.MsgOptionText(response, false)); err != nil {
+		if response != nil && response.Text != "" {
+			if _, _, err := b.client.PostMessage(ev.Channel, slacklib.MsgOptionText(response.Text, false)); err != nil {
 				log.Printf("Error sending Slack response: %v", err)
 			}
 		}

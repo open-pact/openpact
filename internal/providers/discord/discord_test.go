@@ -103,3 +103,63 @@ func TestTargetParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		input string
+		max   int
+		want  string
+	}{
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		{"hello world", 5, "hell\u2026"},
+		{"", 5, ""},
+		{"ab", 1, "a"},
+		{"hello world this is a long string", 10, "hello wor\u2026"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := truncate(tt.input, tt.max)
+			if got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.max, got, tt.want)
+			}
+			if len(got) > tt.max+2 { // +2 for multi-byte ellipsis
+				t.Errorf("truncate result too long: len=%d, max=%d", len(got), tt.max)
+			}
+		})
+	}
+}
+
+func TestSplitText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxLen   int
+		wantLen  int
+		wantFirst string
+	}{
+		{"short", "hello", 10, 1, "hello"},
+		{"exact", "hello", 5, 1, "hello"},
+		{"split two", "helloworld", 5, 2, "hello"},
+		{"empty", "", 5, 1, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chunks := splitText(tt.input, tt.maxLen)
+			if len(chunks) != tt.wantLen {
+				t.Errorf("splitText(%q, %d) returned %d chunks, want %d", tt.input, tt.maxLen, len(chunks), tt.wantLen)
+			}
+			if chunks[0] != tt.wantFirst {
+				t.Errorf("first chunk = %q, want %q", chunks[0], tt.wantFirst)
+			}
+			// Verify no chunk exceeds maxLen
+			for i, chunk := range chunks {
+				if len(chunk) > tt.maxLen {
+					t.Errorf("chunk %d length %d exceeds max %d", i, len(chunk), tt.maxLen)
+				}
+			}
+		})
+	}
+}

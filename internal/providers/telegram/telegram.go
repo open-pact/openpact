@@ -136,8 +136,8 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		log.Printf("Error handling Telegram message: %v", err)
 		return
 	}
-	if response != "" {
-		b.sendReply(msg.Chat.ID, response)
+	if response != nil && response.Text != "" {
+		b.sendReply(msg.Chat.ID, response.Text)
 	}
 }
 

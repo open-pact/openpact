@@ -144,6 +144,22 @@ func (b *Bot) registerCommands() error {
 			Name:        "context",
 			Description: "Show context window usage for the current session",
 		},
+		{
+			Name:        "mode-simple",
+			Description: "Set response detail mode to simple (text only)",
+		},
+		{
+			Name:        "mode-thinking",
+			Description: "Set response detail mode to show thinking blocks",
+		},
+		{
+			Name:        "mode-tools",
+			Description: "Set response detail mode to show tool call details",
+		},
+		{
+			Name:        "mode-full",
+			Description: "Set response detail mode to show thinking and tool calls",
+		},
 	}
 
 	for _, cmd := range commands {
@@ -302,11 +318,128 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	}
 
 	// Send response if not empty
-	if response != "" {
-		if _, err := s.ChannelMessageSend(m.ChannelID, response); err != nil {
+	if response != nil && response.Text != "" {
+		if err := b.sendRichResponse(s, m.ChannelID, response); err != nil {
 			log.Printf("Error sending response: %v", err)
 		}
 	}
+}
+
+// sendRichResponse sends a ChatResponse to Discord with optional embeds for
+// thinking blocks and tool calls.
+func (b *Bot) sendRichResponse(s *discordgo.Session, channelID string, resp *chat.ChatResponse) error {
+	// Build embeds from thinking and tool call data
+	var embeds []*discordgo.MessageEmbed
+
+	if resp.Thinking != "" {
+		embeds = append(embeds, &discordgo.MessageEmbed{
+			Title:       "Thinking",
+			Description: truncate(resp.Thinking, 1000),
+			Color:       0xa78bfa, // purple
+		})
+	}
+
+	for _, tc := range resp.ToolCalls {
+		desc := ""
+		if tc.Input != "" {
+			desc += "**Input:** " + truncate(tc.Input, 500)
+		}
+		if tc.Output != "" {
+			if desc != "" {
+				desc += "\n"
+			}
+			desc += "**Output:** " + truncate(tc.Output, 500)
+		}
+		if desc == "" {
+			desc = "(no details)"
+		}
+
+		title := "Tool: " + tc.Name
+		embeds = append(embeds, &discordgo.MessageEmbed{
+			Title:       truncate(title, 256),
+			Description: truncate(desc, 4096),
+			Color:       0xf59e0b, // orange
+		})
+	}
+
+	// Discord limits: 2000 chars per message content, 10 embeds per message.
+	// Split text into chunks if needed.
+	textChunks := splitText(resp.Text, 2000)
+
+	if len(textChunks) == 0 {
+		textChunks = []string{""}
+	}
+
+	// Send first chunk with as many embeds as fit (max 10)
+	firstEmbeds := embeds
+	var overflowEmbeds []*discordgo.MessageEmbed
+	if len(firstEmbeds) > 10 {
+		overflowEmbeds = firstEmbeds[10:]
+		firstEmbeds = firstEmbeds[:10]
+	}
+
+	// Send the first message with embeds
+	_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content: textChunks[0],
+		Embeds:  firstEmbeds,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
+
+	// Send overflow embeds in follow-up messages (10 per message)
+	for len(overflowEmbeds) > 0 {
+		batch := overflowEmbeds
+		if len(batch) > 10 {
+			batch = batch[:10]
+			overflowEmbeds = overflowEmbeds[10:]
+		} else {
+			overflowEmbeds = nil
+		}
+		_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+			Embeds: batch,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to send overflow embeds: %w", err)
+		}
+	}
+
+	// Send remaining text chunks as plain messages
+	for _, chunk := range textChunks[1:] {
+		if _, err := s.ChannelMessageSend(channelID, chunk); err != nil {
+			return fmt.Errorf("failed to send text chunk: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// truncate shortens a string to max characters, adding ellipsis if truncated.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return s[:max]
+	}
+	return s[:max-1] + "\u2026"
+}
+
+// splitText splits a string into chunks of at most maxLen characters.
+func splitText(s string, maxLen int) []string {
+	if len(s) <= maxLen {
+		return []string{s}
+	}
+	var chunks []string
+	for len(s) > 0 {
+		chunk := s
+		if len(chunk) > maxLen {
+			chunk = chunk[:maxLen]
+		}
+		s = s[len(chunk):]
+		chunks = append(chunks, chunk)
+	}
+	return chunks
 }
 
 // React adds a reaction to a message

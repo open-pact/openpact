@@ -51,6 +51,10 @@ type Orchestrator struct {
 	channelSessions map[string]string
 	sessionMu       sync.RWMutex
 
+	// Per-channel detail mode: "provider:channelID" -> mode (simple/thinking/tools/full)
+	channelModes map[string]string
+	modeMu       sync.RWMutex
+
 	// State
 	mu      sync.RWMutex
 	running bool
@@ -60,6 +64,11 @@ type Orchestrator struct {
 // channelSessionsFile is the JSON file that persists per-channel session mappings.
 type channelSessionsFile struct {
 	Sessions map[string]string `json:"sessions"`
+}
+
+// channelModesFile is the JSON file that persists per-channel detail mode settings.
+type channelModesFile struct {
+	Modes map[string]string `json:"modes"`
 }
 
 // sessionKey builds the key for per-channel session lookup.
@@ -73,6 +82,7 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		cfg:             cfg,
 		providerStore:   providerStore,
 		channelSessions: make(map[string]string),
+		channelModes:    make(map[string]string),
 		providers:       make(map[string]chat.Provider),
 		providerStatus:  make(map[string]admin.ProviderStatusInfo),
 	}
@@ -417,8 +427,9 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	}
 	log.Printf("Engine started: %s", o.cfg.Engine.Type)
 
-	// Load persisted sessions from disk
+	// Load persisted sessions and modes from disk
 	o.loadChannelSessions()
+	o.loadChannelModes()
 
 	// Start enabled providers from store (failures are non-fatal)
 	o.startEnabledProviders()
@@ -516,7 +527,7 @@ func (o *Orchestrator) shutdown() error {
 }
 
 // handleChatMessage processes incoming chat messages from any provider.
-func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content string) (string, error) {
+func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content string) (*chat.ChatResponse, error) {
 	log.Printf("[%s] Message from %s in %s: %s", provider, userID, channelID, content)
 
 	// Get or create per-channel session
@@ -524,12 +535,17 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 	if sessionID == "" {
 		session, err := o.engine.CreateSession()
 		if err != nil {
-			return "", fmt.Errorf("failed to create session: %w", err)
+			return nil, fmt.Errorf("failed to create session: %w", err)
 		}
 		sessionID = session.ID
 		o.SetChannelSession(provider, channelID, sessionID)
 		log.Printf("Created new session %s for %s:%s", sessionID, provider, channelID)
 	}
+
+	// Look up the channel's detail mode
+	mode := o.GetChannelMode(provider, channelID)
+	wantTools := mode == chat.ModeTools || mode == chat.ModeFull
+	wantThinking := mode == chat.ModeThinking || mode == chat.ModeFull
 
 	// Prepend source context so the AI knows the origin
 	contextPrefix := fmt.Sprintf("[via %s, channel:%s, user:%s]\n", provider, channelID, userID)
@@ -541,26 +557,37 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 	ctx := context.Background()
 	responses, err := o.engine.Send(ctx, sessionID, messages)
 	if err != nil {
-		return "", fmt.Errorf("engine error: %w", err)
+		return nil, fmt.Errorf("engine error: %w", err)
 	}
 
 	// Accumulate response text. With SSE streaming, each text part event
 	// carries the FULL text (not a delta), and the same part ID may arrive
 	// multiple times (initial + finalized). Track parts by ID so updates
 	// replace rather than duplicate content.
-	textParts := make(map[string]string) // partID → full text
-	var untaggedText string              // fallback for responses without part IDs
+	textParts := make(map[string]string)     // partID → full text
+	thinkingParts := make(map[string]string) // partID → thinking text
+	var untaggedText string                  // fallback for responses without part IDs
 	firstContent := true
+
 	for resp := range responses {
 		if resp.Content != "" && firstContent {
 			log.Printf("[%s] AI response started for session %s", provider, sessionID)
 			firstContent = false
 		}
+
+		// Accumulate text content
 		if resp.Content != "" {
 			if resp.PartID != "" {
 				textParts[resp.PartID] = resp.Content
 			} else {
 				untaggedText += resp.Content
+			}
+		}
+
+		// Accumulate thinking content
+		if wantThinking && resp.Thinking != "" {
+			if resp.PartID != "" {
+				thinkingParts[resp.PartID] = resp.Thinking
 			}
 		}
 	}
@@ -572,7 +599,120 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 	}
 	responseText += untaggedText
 
-	return responseText, nil
+	// Construct ChatResponse
+	result := &chat.ChatResponse{Text: responseText}
+
+	// Build thinking from deduplicated parts
+	if wantThinking {
+		var thinkingText string
+		for _, text := range thinkingParts {
+			thinkingText += text
+		}
+		// Some models (e.g. Gemini) emit literal \n escape sequences in reasoning text — strip them.
+		result.Thinking = strings.ReplaceAll(thinkingText, `\n`, "")
+	}
+
+	// Fetch resolved tool data from the engine's message history.
+	// SSE streaming only provides partial tool info (no input/output),
+	// so we fetch the complete resolved message parts after the stream ends.
+	if wantTools {
+		toolCalls := o.fetchResolvedToolCalls(sessionID)
+		if len(toolCalls) > 0 {
+			result.ToolCalls = toolCalls
+		}
+	}
+
+	return result, nil
+}
+
+// fetchResolvedToolCalls fetches the most recent assistant message from the
+// engine and extracts tool call details from its resolved parts. This gives us
+// the full tool data (name, input, output) that SSE streaming doesn't include.
+func (o *Orchestrator) fetchResolvedToolCalls(sessionID string) []chat.ToolCallInfo {
+	messages, err := o.engine.GetMessages(sessionID, 10)
+	if err != nil {
+		log.Printf("[tools] Failed to fetch messages for session %s: %v", sessionID, err)
+		return nil
+	}
+
+	log.Printf("[tools] Session %s: found %d messages", sessionID, len(messages))
+
+	// Find the last user message, then scan all assistant messages after it.
+	// OpenCode splits tool-calling turns into separate assistant messages:
+	// [user] → [assistant: tool call] → [assistant: text response]
+	lastUserIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			lastUserIdx = i
+			break
+		}
+	}
+
+	var toolCalls []chat.ToolCallInfo
+	start := lastUserIdx + 1
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(messages); i++ {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		for _, raw := range messages[i].Parts {
+			tc, ok := extractToolCall(raw)
+			if ok {
+				toolCalls = append(toolCalls, tc)
+			}
+		}
+	}
+
+	log.Printf("[tools] Session %s: extracted %d tool calls from %d assistant messages", sessionID, len(toolCalls), len(messages)-start)
+	return toolCalls
+}
+
+// extractToolCall parses a raw resolved message part JSON to extract tool call info.
+// OpenCode's resolved parts use this structure:
+//
+//	{type: "tool", tool: "tool_name", state: {status: "...", input: {...}, output: "..."}}
+//
+// The tool field is a plain string (the tool name), and both input and output
+// live inside the state object.
+func extractToolCall(raw json.RawMessage) (chat.ToolCallInfo, bool) {
+	var part struct {
+		Type string          `json:"type"`
+		Tool json.RawMessage `json:"tool"`
+		State struct {
+			Status string          `json:"status"`
+			Input  json.RawMessage `json:"input"`
+			Output string          `json:"output"`
+		} `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &part); err != nil || part.Type != "tool" {
+		return chat.ToolCallInfo{}, false
+	}
+
+	// Resolve tool name — can be a string or an object with a name field
+	var name string
+	var toolStr string
+	if json.Unmarshal(part.Tool, &toolStr) == nil && toolStr != "" {
+		name = toolStr
+	} else {
+		var toolObj struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(part.Tool, &toolObj) == nil {
+			name = toolObj.Name
+		}
+	}
+
+	if name == "" {
+		return chat.ToolCallInfo{}, false
+	}
+
+	return chat.ToolCallInfo{
+		Name:   name,
+		Input:  string(part.State.Input),
+		Output: part.State.Output,
+	}, true
 }
 
 // handleChatCommand processes slash/bot commands from any provider.
@@ -640,6 +780,22 @@ func (o *Orchestrator) handleChatCommand(provider, channelID, userID, command, a
 			return "", fmt.Errorf("failed to get context usage: %w", err)
 		}
 		return formatContextUsage(sessionID, usage), nil
+
+	case "mode-simple":
+		o.SetChannelMode(provider, channelID, chat.ModeSimple)
+		return "Detail mode set to **simple** — responses will show text only.", nil
+
+	case "mode-thinking":
+		o.SetChannelMode(provider, channelID, chat.ModeThinking)
+		return "Detail mode set to **thinking** — responses will include thinking blocks.", nil
+
+	case "mode-tools":
+		o.SetChannelMode(provider, channelID, chat.ModeTools)
+		return "Detail mode set to **tools** — responses will include tool call details.", nil
+
+	case "mode-full":
+		o.SetChannelMode(provider, channelID, chat.ModeFull)
+		return "Detail mode set to **full** — responses will include thinking blocks and tool call details.", nil
 
 	default:
 		return fmt.Sprintf("Unknown command: %s", command), nil
@@ -748,6 +904,91 @@ func (o *Orchestrator) saveChannelSessions() {
 // channelSessionsPath returns the path to the channel sessions file.
 func (o *Orchestrator) channelSessionsPath() string {
 	return filepath.Join(o.cfg.Workspace.DataDir(), "channel_sessions.json")
+}
+
+// GetChannelMode returns the detail mode for a provider:channel pair.
+// Returns "simple" as the default when no mode is set.
+func (o *Orchestrator) GetChannelMode(provider, channelID string) string {
+	o.modeMu.RLock()
+	defer o.modeMu.RUnlock()
+	mode := o.channelModes[sessionKey(provider, channelID)]
+	if mode == "" {
+		return chat.ModeSimple
+	}
+	return mode
+}
+
+// SetChannelMode sets and persists the detail mode for a provider:channel pair.
+func (o *Orchestrator) SetChannelMode(provider, channelID, mode string) {
+	o.modeMu.Lock()
+	o.channelModes[sessionKey(provider, channelID)] = mode
+	o.modeMu.Unlock()
+	o.saveChannelModes()
+}
+
+// ListChannelModes returns all channel mode settings.
+func (o *Orchestrator) ListChannelModes() map[string]string {
+	o.modeMu.RLock()
+	defer o.modeMu.RUnlock()
+	result := make(map[string]string, len(o.channelModes))
+	for k, v := range o.channelModes {
+		result[k] = v
+	}
+	return result
+}
+
+// loadChannelModes reads per-channel mode settings from disk.
+func (o *Orchestrator) loadChannelModes() {
+	path := o.channelModesPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	var f channelModesFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return
+	}
+
+	o.modeMu.Lock()
+	for k, v := range f.Modes {
+		o.channelModes[k] = v
+	}
+	o.modeMu.Unlock()
+	log.Printf("Restored %d channel modes", len(f.Modes))
+}
+
+// saveChannelModes persists per-channel mode settings to disk.
+func (o *Orchestrator) saveChannelModes() {
+	path := o.channelModesPath()
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("Warning: failed to create data dir for channel modes: %v", err)
+		return
+	}
+
+	o.modeMu.RLock()
+	modes := make(map[string]string, len(o.channelModes))
+	for k, v := range o.channelModes {
+		modes[k] = v
+	}
+	o.modeMu.RUnlock()
+
+	data, err := json.Marshal(channelModesFile{Modes: modes})
+	if err != nil {
+		log.Printf("Warning: failed to marshal channel modes: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		log.Printf("Warning: failed to save channel modes: %v", err)
+	}
+}
+
+// channelModesPath returns the path to the channel modes file.
+func (o *Orchestrator) channelModesPath() string {
+	return filepath.Join(o.cfg.Workspace.DataDir(), "channel_modes.json")
 }
 
 // GetContextUsage delegates to the engine.

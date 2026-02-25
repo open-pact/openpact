@@ -353,6 +353,11 @@ func (s *Server) SetProviderManagerAPI(api ProviderManagerAPI) {
 	s.providerHandlers.SetManager(api)
 }
 
+// SetChannelModeAPI sets the channel mode API for detail mode management.
+func (s *Server) SetChannelModeAPI(api ChannelModeAPI) {
+	s.providerHandlers.SetModeAPI(api)
+}
+
 // ProviderStore returns the provider store.
 func (s *Server) ProviderStore() *ProviderStore {
 	return s.providerHandlers.store

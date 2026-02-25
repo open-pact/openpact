@@ -60,6 +60,11 @@ const selectedSessionTitle = computed(() =>
   selectedSession.value?.title || '(untitled)'
 )
 
+// Strip literal \n escape sequences that some models (e.g. Gemini) emit in reasoning text
+function cleanThinking(text) {
+  return text ? text.replace(/\\n/g, '') : ''
+}
+
 // --- Message parsing ---
 function parseMessageParts(parts) {
   if (!parts || !parts.length) return { orderedParts: [] }
@@ -70,7 +75,7 @@ function parseMessageParts(parts) {
     if (part.type === 'reasoning' || part.type === 'thinking') {
       orderedParts.push({
         kind: 'thinking',
-        content: part.text || '',
+        content: cleanThinking(part.text),
         partId: part.id || null,
         label: 'Thinking',
         expanded: false,
@@ -293,16 +298,17 @@ function connectChat(sessionId) {
         break
       case 'thinking': {
         const assistantMsg = getOrCreateStreamingMessage()
+        const cleaned = cleanThinking(msg.content)
         if (msg.part_id) {
           if (msg.part_id in assistantMsg._partIndex) {
             // Update existing thinking part in-place
-            assistantMsg.orderedParts[assistantMsg._partIndex[msg.part_id]].content = msg.content
+            assistantMsg.orderedParts[assistantMsg._partIndex[msg.part_id]].content = cleaned
           } else {
             // New thinking part — push and record index
             assistantMsg._partIndex[msg.part_id] = assistantMsg.orderedParts.length
             assistantMsg.orderedParts.push({
               kind: 'thinking',
-              content: msg.content,
+              content: cleaned,
               partId: msg.part_id,
               label: 'Thinking',
               expanded: false,
@@ -312,11 +318,11 @@ function connectChat(sessionId) {
           // Fallback (reconciliation/no part_id): append to last thinking entry or create new
           const lastThinking = [...assistantMsg.orderedParts].reverse().find(p => p.kind === 'thinking')
           if (lastThinking) {
-            lastThinking.content += msg.content
+            lastThinking.content += cleaned
           } else {
             assistantMsg.orderedParts.push({
               kind: 'thinking',
-              content: msg.content,
+              content: cleaned,
               partId: null,
               label: 'Thinking',
               expanded: false,
