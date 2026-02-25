@@ -2,7 +2,10 @@
 // Supports OpenCode as the backend.
 package engine
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Message represents a conversation message
 type Message struct {
@@ -19,11 +22,16 @@ type ToolCall struct {
 
 // Response represents an AI response
 type Response struct {
-	Content   string     `json:"content"`              // Text response
-	Thinking  string     `json:"thinking,omitempty"`   // Thinking/reasoning content
-	ToolCalls []ToolCall `json:"tool_calls"`           // Tool calls to execute
-	Done      bool       `json:"done"`                 // Whether conversation turn is complete
-	SessionID string     `json:"session_id,omitempty"` // Session that generated this response
+	Content   string              `json:"content"`              // Text response
+	Thinking  string              `json:"thinking,omitempty"`   // Thinking/reasoning content
+	ToolCalls []ToolCall          `json:"tool_calls"`           // Tool calls to execute
+	Parts     []json.RawMessage   `json:"parts,omitempty"`      // Raw non-text/thinking parts (tool, file, snapshot)
+	Done      bool                `json:"done"`                 // Whether conversation turn is complete
+	SessionID string              `json:"session_id,omitempty"` // Session that generated this response
+	// Streaming fields (only set during SSE streaming)
+	PartID   string `json:"part_id,omitempty"`   // Stable part ID for in-place updates
+	PartType string `json:"part_type,omitempty"` // Part type (reasoning, text, tool, etc.)
+	IsUpdate bool   `json:"is_update,omitempty"` // True if this updates a previously-sent part
 }
 
 // Session represents an opencode session
@@ -45,17 +53,11 @@ type MessageInfo struct {
 	ID        string        `json:"id"`
 	SessionID string        `json:"sessionID"`
 	Role      string        `json:"role"`
-	Parts     []MessagePart `json:"parts"`
+	Parts     []json.RawMessage `json:"parts"`
 	Time      struct {
 		Created int64 `json:"created"`
 		Updated int64 `json:"updated"`
 	} `json:"time"`
-}
-
-// MessagePart represents a part of a message
-type MessagePart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
 }
 
 // ContextUsage holds token usage and context window information for a session
@@ -116,6 +118,7 @@ type Config struct {
 	Model    string // Model to use
 	WorkDir  string // Working directory (workspace path, used for MCP config)
 	Port     int    // Port for opencode serve (0 = use DefaultPort)
+	Hostname string // Hostname for opencode serve (default: 127.0.0.1)
 	Password string // Optional OPENCODE_SERVER_PASSWORD
 }
 

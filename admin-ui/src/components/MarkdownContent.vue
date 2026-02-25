@@ -155,6 +155,7 @@ onBeforeUnmount(() => {
 .markdown-content {
   line-height: 1.6;
   word-break: break-word;
+  min-width: 0;
 }
 
 .markdown-content > *:first-child {

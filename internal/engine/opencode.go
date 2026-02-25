@@ -24,6 +24,7 @@ type OpenCode struct {
 	baseURL      string       // e.g. "http://127.0.0.1:4098"
 	client       *http.Client
 	mu           sync.Mutex
+	sse          *sseClient   // Persistent SSE connection for real-time streaming
 }
 
 // DefaultPort is the fixed port used by both the entrypoint (which launches
@@ -49,7 +50,12 @@ func (o *OpenCode) Start(ctx context.Context) error {
 		port = DefaultPort
 	}
 
-	o.baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+	hostname := o.cfg.Hostname
+	if hostname == "" {
+		hostname = "127.0.0.1"
+	}
+
+	o.baseURL = fmt.Sprintf("http://%s:%d", hostname, port)
 
 	log.Printf("Connecting to opencode serve at %s", o.baseURL)
 
@@ -59,15 +65,26 @@ func (o *OpenCode) Start(ctx context.Context) error {
 	}
 
 	log.Printf("opencode serve is ready at %s", o.baseURL)
+
+	// Start persistent SSE connection for real-time streaming
+	o.sse = newSSEClient(o.baseURL, o.cfg.Password)
+	o.sse.Start(ctx)
+
 	return nil
 }
 
-// Stop is a no-op — the OpenCode process is managed externally.
+// Stop shuts down the SSE client. The OpenCode process itself is managed externally.
 func (o *OpenCode) Stop() error {
+	if o.sse != nil {
+		o.sse.Stop()
+	}
 	return nil
 }
 
 // Send posts a message to a session and streams the response.
+// If the SSE client is connected, events are streamed in real-time as parts
+// are created/updated. After completion, a GET reconciliation ensures no parts
+// were missed. Falls back to the blocking POST+GET path if SSE is unavailable.
 func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Message) (<-chan Response, error) {
 	o.mu.Lock()
 	systemPrompt := o.systemPrompt
@@ -115,6 +132,269 @@ func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Messag
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// If SSE is not connected, fall back to blocking POST+GET
+	if o.sse == nil || !o.sse.IsConnected() {
+		return o.sendBlocking(ctx, sessionID, jsonBody)
+	}
+
+	return o.sendStreaming(ctx, sessionID, jsonBody)
+}
+
+// sendStreaming uses the SSE event stream for real-time part delivery.
+func (o *OpenCode) sendStreaming(ctx context.Context, sessionID string, jsonBody []byte) (<-chan Response, error) {
+	// Subscribe to SSE events BEFORE sending the POST (so we don't miss early events)
+	sub := o.sse.Subscribe(sessionID)
+
+	responseChan := make(chan Response, 32)
+
+	go func() {
+		defer close(responseChan)
+		defer o.sse.Unsubscribe(sub)
+
+		// Fire POST in background
+		type postResult struct {
+			anchorID string
+			err      error
+		}
+		postDone := make(chan postResult, 1)
+		go func() {
+			id, err := o.postMessage(ctx, sessionID, jsonBody)
+			postDone <- postResult{id, err}
+		}()
+
+		seenParts := make(map[string]bool)
+		var userMsgID string // Learned from first message.part.updated (user msg arrives first since we subscribe before POST)
+		var anchorID string
+
+		// Process SSE events until session.idle or context cancellation
+	eventLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case result := <-postDone:
+				if result.err != nil {
+					log.Printf("[sse] POST failed for session %s: %v", sessionID, result.err)
+					responseChan <- Response{
+						Done:      true,
+						SessionID: sessionID,
+					}
+					return
+				}
+				anchorID = result.anchorID
+				// Continue processing SSE events — POST completing doesn't mean AI is done.
+
+			case evt, ok := <-sub.ch:
+				if !ok {
+					break eventLoop // Channel closed (unsubscribed)
+				}
+
+				switch evt.Type {
+				case "message.part.updated":
+					o.handlePartEvent(evt.Data, sessionID, seenParts, &userMsgID, responseChan)
+
+				case "session.idle":
+					// Definitive completion signal
+					break eventLoop
+
+				case "session.status", "message.updated":
+					// Informational — no action needed
+				}
+			}
+		}
+
+		// Reconciliation: GET resolved messages to catch anything missed by SSE
+		o.reconcile(sessionID, anchorID, seenParts, responseChan)
+
+		responseChan <- Response{
+			Done:      true,
+			SessionID: sessionID,
+		}
+	}()
+
+	return responseChan, nil
+}
+
+// handlePartEvent processes a message.part.updated SSE event and sends it to the response channel.
+// Filters out user message parts by tracking the user's messageID. Since we subscribe before POST,
+// the first messageID seen belongs to the user message — all subsequent messageIDs are assistant.
+func (o *OpenCode) handlePartEvent(data json.RawMessage, sessionID string, seenParts map[string]bool, userMsgID *string, ch chan<- Response) {
+	var evt struct {
+		Properties struct {
+			Part struct {
+				ID        string `json:"id"`
+				MessageID string `json:"messageID"`
+				Type      string `json:"type"`
+				Text      string `json:"text"`
+				SessionID string `json:"sessionID"`
+				Time      struct {
+					Start int64  `json:"start"`
+					End   *int64 `json:"end"`
+				} `json:"time"`
+			} `json:"part"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &evt); err != nil {
+		return
+	}
+
+	part := evt.Properties.Part
+	if part.ID == "" {
+		return
+	}
+
+	// Learn the user message ID from the first part event (user message is always created first
+	// because we subscribe before POST). Then skip all parts from that message.
+	if *userMsgID == "" && part.MessageID != "" {
+		*userMsgID = part.MessageID
+	}
+	if part.MessageID != "" && part.MessageID == *userMsgID {
+		return
+	}
+
+	isUpdate := seenParts[part.ID]
+	seenParts[part.ID] = true
+
+	switch part.Type {
+	case "reasoning", "thinking":
+		ch <- Response{
+			Thinking:  part.Text,
+			SessionID: sessionID,
+			PartID:    part.ID,
+			PartType:  part.Type,
+			IsUpdate:  isUpdate,
+		}
+
+	case "text":
+		ch <- Response{
+			Content:   part.Text,
+			SessionID: sessionID,
+			PartID:    part.ID,
+			PartType:  part.Type,
+			IsUpdate:  isUpdate,
+		}
+
+	case "step-start", "step-finish":
+		// Skip operational markers
+
+	default:
+		// tool, file, snapshot, etc. — forward the full part as raw JSON
+		partJSON, err := json.Marshal(evt.Properties.Part)
+		if err != nil {
+			return
+		}
+		ch <- Response{
+			Parts:     []json.RawMessage{partJSON},
+			SessionID: sessionID,
+			PartID:    part.ID,
+			PartType:  part.Type,
+			IsUpdate:  isUpdate,
+		}
+	}
+}
+
+// postMessage sends the POST /session/:id/message and returns the anchor message ID.
+func (o *OpenCode) postMessage(ctx context.Context, sessionID string, jsonBody []byte) (string, error) {
+	url := fmt.Sprintf("%s/session/%s/message", o.baseURL, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	o.setAuth(req)
+
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("opencode API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var postMsg struct {
+		Info struct {
+			ID string `json:"id"`
+		} `json:"info"`
+	}
+	json.Unmarshal(respBody, &postMsg)
+
+	return postMsg.Info.ID, nil
+}
+
+// reconcile fetches resolved messages via GET and forwards any parts not already
+// sent via SSE. This catches tool output, file parts, and anything else that
+// may have been missed during streaming.
+func (o *OpenCode) reconcile(sessionID, anchorID string, seenParts map[string]bool, ch chan<- Response) {
+	if anchorID == "" {
+		return
+	}
+
+	var turnMessages []MessageInfo
+	for _, limit := range []int{10, 50, 200} {
+		messages, err := o.GetMessages(sessionID, limit)
+		if err != nil {
+			log.Printf("[reconcile] Error fetching messages (limit %d): %v", limit, err)
+			break
+		}
+
+		turnMessages = o.extractTurn(messages, anchorID)
+		if turnMessages != nil {
+			break
+		}
+	}
+
+	for _, msg := range turnMessages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		o.forwardUnseenParts(msg.Parts, sessionID, seenParts, ch)
+	}
+}
+
+// forwardUnseenParts sends only parts that weren't already delivered via SSE.
+func (o *OpenCode) forwardUnseenParts(parts []json.RawMessage, sessionID string, seenParts map[string]bool, ch chan<- Response) {
+	for _, raw := range parts {
+		var peek struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &peek); err != nil {
+			continue
+		}
+
+		// Skip parts already sent via SSE
+		if peek.ID != "" && seenParts[peek.ID] {
+			continue
+		}
+
+		// Skip operational markers
+		if peek.Type == "step-start" || peek.Type == "step-finish" {
+			continue
+		}
+
+		switch peek.Type {
+		case "reasoning", "thinking":
+			ch <- Response{Thinking: peek.Text, SessionID: sessionID}
+		case "text":
+			ch <- Response{Content: peek.Text, SessionID: sessionID}
+		default:
+			ch <- Response{Parts: []json.RawMessage{raw}, SessionID: sessionID}
+		}
+	}
+}
+
+// sendBlocking is the original POST+GET fallback when SSE is unavailable.
+func (o *OpenCode) sendBlocking(ctx context.Context, sessionID string, jsonBody []byte) (<-chan Response, error) {
 	url := fmt.Sprintf("%s/session/%s/message", o.baseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
 	if err != nil {
@@ -140,49 +420,38 @@ func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Messag
 		defer close(responseChan)
 		defer resp.Body.Close()
 
-		// Read the full response body
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			log.Printf("Error reading response: %v", err)
 			return
 		}
 
-		// Try to parse as a message object
-		var msgResp struct {
-			ID    string        `json:"id"`
-			Parts []MessagePart `json:"parts"`
+		var postMsg struct {
+			Info struct {
+				ID string `json:"id"`
+			} `json:"info"`
 		}
-		if err := json.Unmarshal(respBody, &msgResp); err == nil && len(msgResp.Parts) > 0 {
-			var text string
-			var thinking string
-			for _, part := range msgResp.Parts {
-				if part.Type == "text" && part.Text != "" {
-					text += part.Text
-				} else if (part.Type == "reasoning" || part.Type == "thinking") && part.Text != "" {
-					thinking += part.Text
-				}
+		json.Unmarshal(respBody, &postMsg)
+
+		var turnMessages []MessageInfo
+		for _, limit := range []int{10, 50, 200} {
+			messages, err := o.GetMessages(sessionID, limit)
+			if err != nil {
+				log.Printf("Error fetching messages (limit %d): %v", limit, err)
+				break
 			}
-			if thinking != "" {
-				responseChan <- Response{
-					Thinking:  thinking,
-					SessionID: sessionID,
-				}
+
+			turnMessages = o.extractTurn(messages, postMsg.Info.ID)
+			if turnMessages != nil {
+				break
 			}
-			if text != "" {
-				responseChan <- Response{
-					Content:   text,
-					SessionID: sessionID,
-				}
+		}
+
+		for _, msg := range turnMessages {
+			if msg.Role != "assistant" {
+				continue
 			}
-		} else {
-			// Fall back to treating as plain text
-			content := string(respBody)
-			if content != "" {
-				responseChan <- Response{
-					Content:   content,
-					SessionID: sessionID,
-				}
-			}
+			o.forwardMessageParts(msg.Parts, sessionID, responseChan)
 		}
 
 		responseChan <- Response{
@@ -192,6 +461,78 @@ func (o *OpenCode) Send(ctx context.Context, sessionID string, messages []Messag
 	}()
 
 	return responseChan, nil
+}
+
+// extractTurn finds the POST response message by ID in the message list, then
+// scans backwards to the preceding user message. Returns the slice of messages
+// that make up this turn (between the user message and the POST message,
+// inclusive of the POST message but exclusive of the user message).
+// Returns nil if anchorID is not found in the list.
+func (o *OpenCode) extractTurn(messages []MessageInfo, anchorID string) []MessageInfo {
+	// Find the anchor message (the POST response)
+	anchorIdx := -1
+	for i, m := range messages {
+		if m.ID == anchorID {
+			anchorIdx = i
+			break
+		}
+	}
+	if anchorIdx < 0 {
+		return nil
+	}
+
+	// Scan backwards from the anchor to find the user message that started
+	// this turn — everything between it and the anchor is the turn.
+	startIdx := 0
+	for i := anchorIdx - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			startIdx = i + 1
+			break
+		}
+	}
+
+	return messages[startIdx : anchorIdx+1]
+}
+
+// forwardMessageParts extracts text, thinking, and other parts from raw message
+// parts and sends them through the response channel in display order.
+func (o *OpenCode) forwardMessageParts(parts []json.RawMessage, sessionID string, ch chan<- Response) {
+	var text string
+	var thinking string
+	var extraParts []json.RawMessage
+
+	for _, raw := range parts {
+		var peek struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &peek); err != nil {
+			continue
+		}
+		switch peek.Type {
+		case "text":
+			text += peek.Text
+		case "reasoning", "thinking":
+			thinking += peek.Text
+		case "step-start", "step-finish":
+			// Operational markers from OpenCode — skip, the resolved tool/file
+			// parts contain the real data.
+			continue
+		default:
+			// tool, file, snapshot, etc.
+			extraParts = append(extraParts, raw)
+		}
+	}
+
+	if thinking != "" {
+		ch <- Response{Thinking: thinking, SessionID: sessionID}
+	}
+	if len(extraParts) > 0 {
+		ch <- Response{Parts: extraParts, SessionID: sessionID}
+	}
+	if text != "" {
+		ch <- Response{Content: text, SessionID: sessionID}
+	}
 }
 
 // SetSystemPrompt sets the system prompt for context injection.
@@ -358,8 +699,8 @@ func (o *OpenCode) GetMessages(sessionID string, limit int) ([]MessageInfo, erro
 
 	// OpenCode wraps each message in {"info": {...}, "parts": [...]}
 	var wrapped []struct {
-		Info  MessageInfo   `json:"info"`
-		Parts []MessagePart `json:"parts"`
+		Info  MessageInfo       `json:"info"`
+		Parts []json.RawMessage `json:"parts"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&wrapped); err != nil {
 		return nil, fmt.Errorf("failed to decode messages: %w", err)

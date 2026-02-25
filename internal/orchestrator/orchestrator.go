@@ -188,6 +188,7 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		Model:    cfg.Engine.Model,
 		WorkDir:  cfg.Workspace.Path,
 		Port:     cfg.Engine.Port,
+		Hostname: cfg.Engine.Hostname,
 		Password: cfg.Engine.Password,
 	}
 	eng, err := engine.New(engineCfg)
@@ -543,15 +544,33 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 		return "", fmt.Errorf("engine error: %w", err)
 	}
 
-	var responseText string
+	// Accumulate response text. With SSE streaming, each text part event
+	// carries the FULL text (not a delta), and the same part ID may arrive
+	// multiple times (initial + finalized). Track parts by ID so updates
+	// replace rather than duplicate content.
+	textParts := make(map[string]string) // partID → full text
+	var untaggedText string              // fallback for responses without part IDs
 	firstContent := true
 	for resp := range responses {
 		if resp.Content != "" && firstContent {
 			log.Printf("[%s] AI response started for session %s", provider, sessionID)
 			firstContent = false
 		}
-		responseText += resp.Content
+		if resp.Content != "" {
+			if resp.PartID != "" {
+				textParts[resp.PartID] = resp.Content
+			} else {
+				untaggedText += resp.Content
+			}
+		}
 	}
+
+	// Build final text from deduplicated parts + any untagged content
+	var responseText string
+	for _, text := range textParts {
+		responseText += text
+	}
+	responseText += untaggedText
 
 	return responseText, nil
 }

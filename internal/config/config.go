@@ -74,6 +74,7 @@ type EngineConfig struct {
 	Provider string `yaml:"provider"` // For OpenCode: "anthropic", "openai", "ollama", etc.
 	Model    string `yaml:"model"`    // Model name
 	Port     int    `yaml:"port"`     // Port for opencode serve (default: 4098)
+	Hostname string `yaml:"hostname"` // Hostname for opencode serve (default: 127.0.0.1)
 	Password string `yaml:"password"` // Optional OPENCODE_SERVER_PASSWORD
 }
 
@@ -156,6 +157,7 @@ func Default() *Config {
 			Provider: "anthropic",
 			Model:    "claude-sonnet-4-20250514",
 			Port:     4098,
+			Hostname: "127.0.0.1",
 		},
 		Workspace: WorkspaceConfig{
 			Path: "/workspace",
@@ -223,6 +225,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("WORKSPACE_PATH"); v != "" {
 		cfg.Workspace.Path = v
+	}
+	if v := os.Getenv("OPENCODE_HOSTNAME"); v != "" {
+		cfg.Engine.Hostname = v
 	}
 	if v := os.Getenv("ADMIN_BIND"); v != "" {
 		cfg.Admin.Bind = v

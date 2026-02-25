@@ -3,11 +3,12 @@ services:
     build: .
     env_file: .env
     environment:
-      - ADMIN_BIND=0.0.0.0:8080
+      - ADMIN_BIND=0.0.0.0:8888
     ports:
-      - "8080:8080"   # Admin UI
+      - "8888:8888"   # Admin UI
       - "8081:8081"   # Health / Prometheus metrics
       - "1455:1455"   # OpenCode OAuth callback
+      - "4098:4098"   # OpenCode API - Disable for production
     volumes:
       - ${HOST_WORKSPACE_PATH}:/workspace
     restart: unless-stopped

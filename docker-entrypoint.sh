@@ -130,7 +130,7 @@ start_opencode() {
             TERM="${TERM:-xterm}" \
             ${OC_PASSWORD:+OPENCODE_SERVER_PASSWORD=$OC_PASSWORD} \
             $OC_ENV \
-            opencode serve --port 4098 --hostname 127.0.0.1
+            opencode serve --port 4098 --hostname ${OPENCODE_HOSTNAME:-127.0.0.1}
         echo "opencode exited ($?), restarting in 2s..."
         sleep 2
     done

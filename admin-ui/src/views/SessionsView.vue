@@ -62,53 +62,71 @@ const selectedSessionTitle = computed(() =>
 
 // --- Message parsing ---
 function parseMessageParts(parts) {
-  if (!parts || !parts.length) return { textContent: '', blocks: [] }
+  if (!parts || !parts.length) return { orderedParts: [] }
 
-  const textParts = []
-  const blocks = []
-  const thinkingParts = []
+  const orderedParts = []
 
   for (const part of parts) {
     if (part.type === 'reasoning' || part.type === 'thinking') {
-      thinkingParts.push(part.text || '')
+      orderedParts.push({
+        kind: 'thinking',
+        content: part.text || '',
+        partId: part.id || null,
+        label: 'Thinking',
+        expanded: false,
+      })
     } else if (part.type === 'text') {
-      textParts.push(part.text || '')
-    } else if (part.type === 'tool') {
-      blocks.push({
-        kind: 'tool',
-        label: `Tool: ${part.tool?.name || part.tool || 'unknown'}`,
-        content: formatToolContent(part),
-        expanded: false,
+      orderedParts.push({
+        kind: 'text',
+        content: part.text || '',
+        partId: part.id || null,
       })
-    } else if (part.type === 'file') {
-      blocks.push({
-        kind: 'file',
-        label: `File: ${part.source || part.url || 'attachment'}`,
-        content: `URL: ${part.url || '(none)'}\nMIME: ${part.mime || 'unknown'}`,
-        expanded: false,
-      })
-    } else if (part.type === 'snapshot') {
-      blocks.push({
-        kind: 'snapshot',
-        label: 'Snapshot',
-        content: typeof part.snapshot === 'string' ? part.snapshot : JSON.stringify(part.snapshot, null, 2),
-        expanded: false,
-      })
+    } else {
+      const block = partToBlock(part)
+      if (block) {
+        block.partId = part.id || null
+        orderedParts.push(block)
+      }
     }
   }
 
-  if (thinkingParts.length) {
-    blocks.unshift({
-      kind: 'thinking',
-      label: 'Thinking',
-      content: thinkingParts.join('\n').trim(),
-      expanded: false,
-    })
-  }
+  return { orderedParts }
+}
 
+// Convert a single raw part object into a display block (reused by parseMessageParts and WS handler)
+// Returns null for parts that should be skipped (step-start/step-finish markers).
+function partToBlock(part) {
+  if (part.type === 'step-start' || part.type === 'step-finish') {
+    return null
+  }
+  if (part.type === 'tool') {
+    return {
+      kind: 'tool',
+      label: `Tool: ${part.tool?.name || part.tool || 'unknown'}`,
+      content: formatToolContent(part),
+      expanded: false,
+    }
+  } else if (part.type === 'file') {
+    return {
+      kind: 'file',
+      label: `File: ${part.source || part.url || 'attachment'}`,
+      content: `URL: ${part.url || '(none)'}\nMIME: ${part.mime || 'unknown'}`,
+      expanded: false,
+    }
+  } else if (part.type === 'snapshot') {
+    return {
+      kind: 'snapshot',
+      label: 'Snapshot',
+      content: typeof part.snapshot === 'string' ? part.snapshot : JSON.stringify(part.snapshot, null, 2),
+      expanded: false,
+    }
+  }
+  // Unknown non-text/thinking type
   return {
-    textContent: textParts.join('').trim(),
-    blocks,
+    kind: part.type || 'unknown',
+    label: part.type || 'Unknown',
+    content: JSON.stringify(part, null, 2),
+    expanded: false,
   }
 }
 
@@ -136,16 +154,16 @@ function formatToolContent(part) {
   return lines.join('\n') || JSON.stringify(part, null, 2)
 }
 
-function thinkingBlocks(msg) {
-  return msg.blocks.filter(b => b.kind === 'thinking')
+function togglePart(part) {
+  part.expanded = !part.expanded
 }
 
-function nonThinkingBlocks(msg) {
-  return msg.blocks.filter(b => b.kind !== 'thinking')
-}
-
-function toggleBlock(block) {
-  block.expanded = !block.expanded
+function isLastBubblePart(msg, partIndex) {
+  for (let j = msg.orderedParts.length - 1; j >= 0; j--) {
+    const k = msg.orderedParts[j].kind
+    if (k === 'text' || k === 'file' || k === 'snapshot') return j === partIndex
+  }
+  return false
 }
 
 // --- Sessions ---
@@ -228,8 +246,8 @@ async function selectSession(sessionId) {
       if (msgs && msgs.length) {
         chatMessages.value = msgs.map(m => {
           const parsed = parseMessageParts(m.parts)
-          return { role: m.role, textContent: parsed.textContent, blocks: parsed.blocks }
-        }).filter(m => m.textContent || m.blocks.length)
+          return { role: m.role, orderedParts: parsed.orderedParts }
+        }).filter(m => m.orderedParts.length > 0)
       }
     }
   } catch (e) {
@@ -254,52 +272,108 @@ function connectChat(sessionId) {
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data)
+
+    // Helper: get or create the streaming assistant message
+    function getOrCreateStreamingMessage() {
+      const last = chatMessages.value[chatMessages.value.length - 1]
+      if (last && last.role === 'assistant' && last.streaming) return last
+      const newMsg = {
+        role: 'assistant',
+        orderedParts: [],
+        streaming: true,
+        _partIndex: {},  // partId → index in orderedParts for O(1) upsert
+      }
+      chatMessages.value.push(newMsg)
+      return newMsg
+    }
+
     switch (msg.type) {
       case 'connected':
         chatConnected.value = true
         break
       case 'thinking': {
-        const last = chatMessages.value[chatMessages.value.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          // Append to existing thinking block or create one
-          const thinkingBlock = last.blocks.find(b => b.kind === 'thinking')
-          if (thinkingBlock) {
-            thinkingBlock.content += msg.content
+        const assistantMsg = getOrCreateStreamingMessage()
+        if (msg.part_id) {
+          if (msg.part_id in assistantMsg._partIndex) {
+            // Update existing thinking part in-place
+            assistantMsg.orderedParts[assistantMsg._partIndex[msg.part_id]].content = msg.content
           } else {
-            last.blocks.unshift({
+            // New thinking part — push and record index
+            assistantMsg._partIndex[msg.part_id] = assistantMsg.orderedParts.length
+            assistantMsg.orderedParts.push({
               kind: 'thinking',
-              label: 'Thinking',
               content: msg.content,
+              partId: msg.part_id,
+              label: 'Thinking',
               expanded: false,
             })
           }
         } else {
-          chatMessages.value.push({
-            role: 'assistant',
-            textContent: '',
-            blocks: [{
+          // Fallback (reconciliation/no part_id): append to last thinking entry or create new
+          const lastThinking = [...assistantMsg.orderedParts].reverse().find(p => p.kind === 'thinking')
+          if (lastThinking) {
+            lastThinking.content += msg.content
+          } else {
+            assistantMsg.orderedParts.push({
               kind: 'thinking',
-              label: 'Thinking',
               content: msg.content,
+              partId: null,
+              label: 'Thinking',
               expanded: false,
-            }],
-            streaming: true,
-          })
+            })
+          }
         }
         nextTick(() => scrollToBottom())
         break
       }
       case 'text': {
-        const last = chatMessages.value[chatMessages.value.length - 1]
-        if (last && last.role === 'assistant' && last.streaming) {
-          last.textContent += msg.content
+        const assistantMsg = getOrCreateStreamingMessage()
+        if (msg.part_id) {
+          if (msg.part_id in assistantMsg._partIndex) {
+            // Update existing text part in-place
+            assistantMsg.orderedParts[assistantMsg._partIndex[msg.part_id]].content = msg.content
+          } else {
+            // New text part — separate entry preserving position relative to tool calls
+            assistantMsg._partIndex[msg.part_id] = assistantMsg.orderedParts.length
+            assistantMsg.orderedParts.push({
+              kind: 'text',
+              content: msg.content,
+              partId: msg.part_id,
+            })
+          }
         } else {
-          chatMessages.value.push({
-            role: 'assistant',
-            textContent: msg.content,
-            blocks: [],
-            streaming: true,
-          })
+          // Fallback (reconciliation/no part_id): append to last text entry or create new
+          const lastText = [...assistantMsg.orderedParts].reverse().find(p => p.kind === 'text')
+          if (lastText) {
+            lastText.content += msg.content
+          } else {
+            assistantMsg.orderedParts.push({
+              kind: 'text',
+              content: msg.content,
+              partId: null,
+            })
+          }
+        }
+        nextTick(() => scrollToBottom())
+        break
+      }
+      case 'part': {
+        const block = partToBlock(msg.data)
+        if (!block) break // skip step-start/step-finish markers
+        const assistantMsg = getOrCreateStreamingMessage()
+        block.partId = msg.part_id || null
+        if (msg.is_update && msg.part_id && msg.part_id in assistantMsg._partIndex) {
+          // Update existing part in-place, preserve expanded state
+          const idx = assistantMsg._partIndex[msg.part_id]
+          const wasExpanded = assistantMsg.orderedParts[idx].expanded
+          block.expanded = wasExpanded
+          assistantMsg.orderedParts[idx] = block
+        } else {
+          // New part — push and record index
+          if (msg.part_id) {
+            assistantMsg._partIndex[msg.part_id] = assistantMsg.orderedParts.length
+          }
+          assistantMsg.orderedParts.push(block)
         }
         nextTick(() => scrollToBottom())
         break
@@ -308,7 +382,10 @@ function connectChat(sessionId) {
         chatLoading.value = false
         {
           const lastMsg = chatMessages.value[chatMessages.value.length - 1]
-          if (lastMsg) lastMsg.streaming = false
+          if (lastMsg) {
+            lastMsg.streaming = false
+            delete lastMsg._partIndex
+          }
         }
         loadSessions()
         break
@@ -330,7 +407,7 @@ function disconnectChat() {
 function sendMessage() {
   if (!chatInput.value.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
   const content = chatInput.value.trim()
-  chatMessages.value.push({ role: 'user', textContent: content, blocks: [] })
+  chatMessages.value.push({ role: 'user', orderedParts: [{ kind: 'text', content }] })
   chatInput.value = ''
   chatLoading.value = true
   ws.send(JSON.stringify({ type: 'message', content }))
@@ -484,58 +561,83 @@ onBeforeUnmount(() => {
                 <n-spin v-if="messagesLoading" size="small" style="display: block; margin: 24px auto" />
                 <template v-else>
                   <template v-for="(msg, i) in chatMessages" :key="i">
-                    <!-- Thinking blocks — full width, outside bubbles -->
-                    <div
-                      v-for="(block, bi) in thinkingBlocks(msg)"
-                      :key="`${i}-t-${bi}`"
-                      class="thinking-row"
-                    >
-                      <div
-                        class="detail-block thinking"
-                        :class="{ expanded: block.expanded }"
-                        @click="toggleBlock(block)"
-                      >
-                        <div class="detail-header">
-                          <n-icon size="14" class="detail-chevron"><ChevronForwardOutline /></n-icon>
-                          <span class="detail-label">{{ block.label }}</span>
-                          <span v-if="!block.expanded" class="detail-preview">
-                            {{ block.content.substring(0, 80) }}{{ block.content.length > 80 ? '...' : '' }}
-                          </span>
+                    <template v-for="(part, pi) in msg.orderedParts" :key="`${i}-${pi}`">
+                      <!-- Thinking — full width, outside bubbles -->
+                      <div v-if="part.kind === 'thinking'" class="thinking-row">
+                        <div
+                          class="detail-block thinking"
+                          :class="{ expanded: part.expanded }"
+                          @click="togglePart(part)"
+                        >
+                          <div class="detail-header">
+                            <n-icon size="14" class="detail-chevron"><ChevronForwardOutline /></n-icon>
+                            <span class="detail-label">{{ part.label }}</span>
+                            <span v-if="!part.expanded" class="detail-preview">
+                              {{ part.content.substring(0, 80) }}{{ part.content.length > 80 ? '...' : '' }}
+                            </span>
+                          </div>
+                          <div v-if="part.expanded" class="detail-body">
+                            <MarkdownContent :content="part.content" :streaming="!!msg.streaming" />
+                          </div>
                         </div>
-                        <div v-if="block.expanded" class="detail-body">{{ block.content }}</div>
                       </div>
-                    </div>
 
-                    <!-- Message bubble — matches MessageItem.vue -->
-                    <div
-                      v-if="msg.textContent || nonThinkingBlocks(msg).length"
-                      class="chat-message flex flex-col gap-2 p-3 bg-gray-100 dark:bg-gray-700"
-                      :class="{
-                        'self-message': msg.role === 'user',
-                        'last': isLastInGroup(i),
-                      }"
-                    >
-                      <!-- Tool/file/snapshot blocks inside bubble -->
-                      <div
-                        v-for="(block, bi) in nonThinkingBlocks(msg)"
-                        :key="bi"
-                        class="detail-block"
-                        :class="[block.kind, { expanded: block.expanded }]"
-                        @click.stop="toggleBlock(block)"
-                      >
-                        <div class="detail-header">
-                          <n-icon size="14" class="detail-chevron"><ChevronForwardOutline /></n-icon>
-                          <span class="detail-label">{{ block.label }}</span>
-                          <span v-if="!block.expanded" class="detail-preview">
-                            {{ block.content.substring(0, 80) }}{{ block.content.length > 80 ? '...' : '' }}
-                          </span>
+                      <!-- Tool — full width, outside bubbles -->
+                      <div v-else-if="part.kind === 'tool'" class="thinking-row">
+                        <div
+                          class="detail-block tool"
+                          :class="{ expanded: part.expanded }"
+                          @click="togglePart(part)"
+                        >
+                          <div class="detail-header">
+                            <n-icon size="14" class="detail-chevron"><ChevronForwardOutline /></n-icon>
+                            <span class="detail-label">{{ part.label }}</span>
+                            <span v-if="!part.expanded" class="detail-preview">
+                              {{ part.content.substring(0, 80) }}{{ part.content.length > 80 ? '...' : '' }}
+                            </span>
+                          </div>
+                          <div v-if="part.expanded" class="detail-body">{{ part.content }}</div>
                         </div>
-                        <div v-if="block.expanded" class="detail-body">{{ block.content }}</div>
                       </div>
-                      <!-- Text -->
-                      <MarkdownContent v-if="msg.textContent && msg.role === 'assistant'" :content="msg.textContent" :streaming="!!msg.streaming" />
-                      <span v-else-if="msg.textContent" style="white-space: pre-wrap; word-break: break-word;">{{ msg.textContent }}</span>
-                    </div>
+
+                      <!-- Text bubble -->
+                      <div
+                        v-else-if="part.kind === 'text'"
+                        class="chat-message flex flex-col gap-2 p-3 bg-gray-100 dark:bg-gray-700"
+                        :class="{
+                          'self-message': msg.role === 'user',
+                          'last': isLastInGroup(i) && isLastBubblePart(msg, pi),
+                        }"
+                      >
+                        <MarkdownContent v-if="msg.role === 'assistant'" :content="part.content" :streaming="!!msg.streaming" />
+                        <span v-else style="white-space: pre-wrap; word-break: break-word;">{{ part.content }}</span>
+                      </div>
+
+                      <!-- File/snapshot — bubble with collapsible detail block -->
+                      <div
+                        v-else
+                        class="chat-message flex flex-col gap-2 p-3 bg-gray-100 dark:bg-gray-700"
+                        :class="{
+                          'self-message': msg.role === 'user',
+                          'last': isLastInGroup(i) && isLastBubblePart(msg, pi),
+                        }"
+                      >
+                        <div
+                          class="detail-block"
+                          :class="[part.kind, { expanded: part.expanded }]"
+                          @click.stop="togglePart(part)"
+                        >
+                          <div class="detail-header">
+                            <n-icon size="14" class="detail-chevron"><ChevronForwardOutline /></n-icon>
+                            <span class="detail-label">{{ part.label }}</span>
+                            <span v-if="!part.expanded" class="detail-preview">
+                              {{ part.content.substring(0, 80) }}{{ part.content.length > 80 ? '...' : '' }}
+                            </span>
+                          </div>
+                          <div v-if="part.expanded" class="detail-body">{{ part.content }}</div>
+                        </div>
+                      </div>
+                    </template>
                   </template>
 
                   <!-- Typing indicator -->
@@ -658,7 +760,6 @@ onBeforeUnmount(() => {
 // =============================================
 // Message bubbles — matches MessageItem.vue exactly
 // =============================================
-// NOTE: No max-width on .chat-message — the theme doesn't set one.
 .dark {
   .chat-message {
     --current-color: #374151;
@@ -666,9 +767,12 @@ onBeforeUnmount(() => {
   }
 }
 
+// Constrain width so code blocks scroll instead of expanding the bubble off-screen.
 .chat-message {
   --current-color: #f3f4f6;
   --self-background: #e0f7fa;
+  max-width: 100%;
+  min-width: 0;
 
   span a {
     color: rgb(0, 183, 255) !important;
@@ -821,8 +925,9 @@ onBeforeUnmount(() => {
 }
 
 .detail-block.thinking .detail-body {
-  font-family: inherit;
   font-size: 13px;
+  white-space: normal;
+  max-height: none;
 }
 
 // Inside-bubble detail blocks need margin

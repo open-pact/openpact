@@ -166,14 +166,21 @@ func (h *SessionHandlers) Chat(w http.ResponseWriter, r *http.Request, sessionID
 					log.Printf("[admin] AI response started for session %s", sessionID)
 					firstContent = false
 				}
-				sendMsg(chatMessage{Type: "thinking", Content: resp.Thinking})
+				sendMsg(chatMessage{Type: "thinking", Content: resp.Thinking, PartID: resp.PartID, IsUpdate: resp.IsUpdate})
+			}
+			for _, part := range resp.Parts {
+				if firstContent {
+					log.Printf("[admin] AI response started for session %s", sessionID)
+					firstContent = false
+				}
+				sendMsg(chatMessage{Type: "part", Data: part, PartID: resp.PartID, IsUpdate: resp.IsUpdate})
 			}
 			if resp.Content != "" {
 				if firstContent {
 					log.Printf("[admin] AI response started for session %s", sessionID)
 					firstContent = false
 				}
-				sendMsg(chatMessage{Type: "text", Content: resp.Content})
+				sendMsg(chatMessage{Type: "text", Content: resp.Content, PartID: resp.PartID, IsUpdate: resp.IsUpdate})
 			}
 			if resp.Done {
 				sendMsg(chatMessage{Type: "done"})
@@ -243,9 +250,12 @@ func (h *SessionHandlers) SetDefaultModel(w http.ResponseWriter, r *http.Request
 
 // chatMessage is the WebSocket message format for chat.
 type chatMessage struct {
-	Type      string `json:"type"` // "message", "text", "thinking", "done", "error", "connected"
-	Content   string `json:"content,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
+	Type      string          `json:"type"` // "message", "text", "thinking", "part", "done", "error", "connected"
+	Content   string          `json:"content,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	PartID    string          `json:"part_id,omitempty"`   // Stable part ID for in-place updates
+	IsUpdate  bool            `json:"is_update,omitempty"` // True if this updates a previously-sent part
 }
 
 // writeJSON writes a JSON response.

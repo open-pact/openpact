@@ -23,7 +23,7 @@ go test -v -run TestName ./internal/packagename/
 
 # Admin UI (Vue 3 + Vite)
 cd admin-ui && npm install && npm run build   # Build (output: admin-ui/dist/)
-cd admin-ui && npm run dev                     # Dev server with API proxy to :8080
+cd admin-ui && npm run dev                     # Dev server with API proxy to :8888
 
 # Documentation (Docusaurus)
 cd docs && yarn install && yarn start          # Dev server
@@ -58,7 +58,7 @@ Admin UI     → Admin API    → Orchestrator (SessionAPI) → opencode serve
 - `cmd/openpact/` — Main orchestrator binary
 - `cmd/admin/` — Standalone admin server
 
-**Admin UI (`admin-ui/`):** Vue 3 + Naive UI component library. Built with Vite. The compiled output is embedded into the Go binary. During development, the Vite dev server proxies `/api` requests to `localhost:8080`.
+**Admin UI (`admin-ui/`):** Vue 3 + Naive UI component library. Built with Vite. The compiled output is embedded into the Go binary. During development, the Vite dev server proxies `/api` requests to `localhost:8888`.
 
 ## OpenCode Engine Integration
 

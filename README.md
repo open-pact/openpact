@@ -284,7 +284,7 @@ docker compose up --build -d
 
 The workspace directory is mounted into the container at `/workspace`. Each developer sets their own `HOST_WORKSPACE_PATH` in `.env` — this must be outside the project directory.
 
-The admin UI will be available at `http://localhost:8080` and health/metrics at `http://localhost:8081`.
+The admin UI will be available at `http://localhost:8888` and health/metrics at `http://localhost:8081`.
 
 ### Without Docker
 

@@ -86,7 +86,7 @@ COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod 755 /app/docker-entrypoint.sh
 
 # Expose admin UI port and OpenCode OAuth callback port
-EXPOSE 8080 1455
+EXPOSE 8888 1455
 
 # Entrypoint runs as root to fix bind-mount permissions, then drops to openpact-system
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
