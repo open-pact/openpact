@@ -62,16 +62,16 @@ type MessageInfo struct {
 
 // ContextUsage holds token usage and context window information for a session
 type ContextUsage struct {
-	Model          string  // Model identifier (e.g. "claude-sonnet-4-20250514")
-	MessageCount   int     // Number of assistant messages
-	CurrentContext int     // Current context size (input tokens from last assistant message)
-	TotalOutput    int     // Sum of output tokens across all assistant messages
-	TotalReasoning int     // Sum of reasoning tokens across all assistant messages
-	CacheRead      int     // Sum of cache read tokens
-	CacheWrite     int     // Sum of cache write tokens
-	TotalCost      float64 // Sum of cost across all assistant messages
-	ContextLimit   int     // Model's context window limit (0 if unknown)
-	OutputLimit    int     // Model's output limit (0 if unknown)
+	Model          string  `json:"model"`           // Model identifier (e.g. "claude-sonnet-4-20250514")
+	MessageCount   int     `json:"message_count"`   // Number of assistant messages
+	CurrentContext int     `json:"current_context"`  // Current context size (input tokens from last assistant message)
+	TotalOutput    int     `json:"total_output"`    // Sum of output tokens across all assistant messages
+	TotalReasoning int     `json:"total_reasoning"` // Sum of reasoning tokens across all assistant messages
+	CacheRead      int     `json:"cache_read"`      // Sum of cache read tokens
+	CacheWrite     int     `json:"cache_write"`     // Sum of cache write tokens
+	TotalCost      float64 `json:"total_cost"`      // Sum of cost across all assistant messages
+	ContextLimit   int     `json:"context_limit"`   // Model's context window limit (0 if unknown)
+	OutputLimit    int     `json:"output_limit"`    // Model's output limit (0 if unknown)
 }
 
 // ModelInfo describes an available model from a provider.

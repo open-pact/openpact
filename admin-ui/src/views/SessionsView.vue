@@ -410,9 +410,91 @@ function disconnectChat() {
   if (ws) { ws.close(); ws = null }
 }
 
+function formatTokens(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(n)
+}
+
+function formatContextUsageMessage(usage) {
+  const lines = []
+
+  if (usage.model) lines.push(`**Model:** \`${usage.model}\``)
+  lines.push(`**Messages:** ${usage.message_count} assistant responses`)
+
+  if (usage.message_count === 0) {
+    lines.push('No assistant messages yet — context usage unavailable.')
+    return lines.join('\n')
+  }
+
+  if (usage.context_limit > 0) {
+    const pct = (usage.current_context / usage.context_limit * 100).toFixed(1)
+    lines.push(`**Current context:** ${formatTokens(usage.current_context)} tokens (${pct}% of ${formatTokens(usage.context_limit)})`)
+  } else {
+    lines.push(`**Current context:** ${formatTokens(usage.current_context)} tokens`)
+  }
+
+  if (usage.total_reasoning > 0) {
+    lines.push(`**Total output:** ${formatTokens(usage.total_output)} tokens (${formatTokens(usage.total_reasoning)} reasoning)`)
+  } else {
+    lines.push(`**Total output:** ${formatTokens(usage.total_output)} tokens`)
+  }
+
+  if (usage.cache_read > 0 || usage.cache_write > 0) {
+    lines.push(`**Cache:** ${formatTokens(usage.cache_read)} read / ${formatTokens(usage.cache_write)} write`)
+  }
+
+  if (usage.total_cost > 0) {
+    lines.push(`**Total cost:** $${usage.total_cost.toFixed(4)}`)
+  }
+
+  return lines.join('\n')
+}
+
+async function handleContextCommand() {
+  chatInput.value = ''
+  chatMessages.value.push({ role: 'user', orderedParts: [{ kind: 'text', content: '/context' }] })
+  await nextTick()
+  scrollToBottom()
+
+  try {
+    const response = await api.get(`/api/sessions/${selectedSessionId.value}/context`)
+    if (response.ok) {
+      const usage = await response.json()
+      const content = formatContextUsageMessage(usage)
+      chatMessages.value.push({
+        role: 'assistant',
+        orderedParts: [{ kind: 'text', content }],
+        system: true,
+      })
+    } else {
+      const data = await response.json().catch(() => ({}))
+      chatMessages.value.push({
+        role: 'assistant',
+        orderedParts: [{ kind: 'text', content: `Failed to get context usage: ${data.error || 'unknown error'}` }],
+        system: true,
+      })
+    }
+  } catch (e) {
+    chatMessages.value.push({
+      role: 'assistant',
+      orderedParts: [{ kind: 'text', content: `Failed to get context usage: ${e.message}` }],
+      system: true,
+    })
+  }
+  await nextTick()
+  scrollToBottom()
+}
+
 function sendMessage() {
   if (!chatInput.value.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
   const content = chatInput.value.trim()
+
+  // Handle /context command locally
+  if (content === '/context') {
+    handleContextCommand()
+    return
+  }
+
   chatMessages.value.push({ role: 'user', orderedParts: [{ kind: 'text', content }] })
   chatInput.value = ''
   chatLoading.value = true

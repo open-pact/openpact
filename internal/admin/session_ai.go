@@ -21,6 +21,7 @@ type SessionAPI interface {
 	GetSession(id string) (*engine.Session, error)
 	DeleteSession(id string) error
 	GetMessages(sessionID string, limit int) ([]engine.MessageInfo, error)
+	GetContextUsage(sessionID string) (*engine.ContextUsage, error)
 	Send(ctx context.Context, sessionID string, messages []engine.Message) (<-chan engine.Response, error)
 	ListModels() ([]engine.ModelInfo, error)
 	GetDefaultModel() (string, string)
@@ -106,6 +107,17 @@ func (h *SessionHandlers) GetMessages(w http.ResponseWriter, r *http.Request, se
 	}
 
 	writeJSON(w, http.StatusOK, messages)
+}
+
+// GetContextUsage handles GET /api/sessions/:id/context
+func (h *SessionHandlers) GetContextUsage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	usage, err := h.api.GetContextUsage(sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, usage)
 }
 
 // Chat handles WebSocket chat at /api/sessions/:id/chat
@@ -304,6 +316,13 @@ func (h *SessionHandlers) HandleSessionByID(w http.ResponseWriter, r *http.Reque
 			return
 		case "chat":
 			h.Chat(w, r, sessionID)
+			return
+		case "context":
+			if r.Method == http.MethodGet {
+				h.GetContextUsage(w, r, sessionID)
+				return
+			}
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
 	}
