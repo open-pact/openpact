@@ -16,7 +16,7 @@ func TestBuildOpenCodeConfig_DisablesBuiltinTools(t *testing.T) {
 		t.Fatal("expected tools to be map[string]bool")
 	}
 
-	disabledTools := []string{"bash", "write", "edit", "read", "grep", "glob", "list", "patch", "webfetch", "websearch"}
+	disabledTools := []string{"bash", "write", "edit", "read", "grep", "glob", "list", "patch", "webfetch", "websearch", "question", "task", "todowrite"}
 	for _, tool := range disabledTools {
 		if val, exists := tools[tool]; !exists || val != false {
 			t.Errorf("expected tool %q to be disabled (false), got %v", tool, val)
@@ -138,6 +138,107 @@ func TestBuildOpenCodeConfig_OverridesDefaultAgentPrompts(t *testing.T) {
 		if !ok || prompt == "" {
 			t.Errorf("expected %q agent to have a non-empty prompt override", name)
 		}
+	}
+}
+
+func TestHandlePartEvent_ToolPreservesRawFields(t *testing.T) {
+	o := &OpenCode{}
+
+	// Simulate a tool-type SSE event with "tool" and "state" fields that
+	// the typed struct doesn't declare — these must survive in the output.
+	sseData := json.RawMessage(`{
+		"properties": {
+			"part": {
+				"id": "part-1",
+				"messageID": "msg-assist",
+				"type": "tool",
+				"tool": "openpact_workspace_write",
+				"state": "running",
+				"sessionID": "sess-1",
+				"time": {"start": 1000}
+			}
+		}
+	}`)
+
+	seenParts := make(map[string]bool)
+	userMsgID := "msg-user" // Already learned — so assistant parts pass through
+	ch := make(chan Response, 4)
+
+	o.handlePartEvent(sseData, "sess-1", seenParts, &userMsgID, ch)
+
+	if len(ch) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(ch))
+	}
+
+	resp := <-ch
+	if resp.PartType != "tool" {
+		t.Fatalf("expected PartType 'tool', got %q", resp.PartType)
+	}
+	if len(resp.Parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(resp.Parts))
+	}
+
+	// The raw JSON must contain "tool" and "state" fields
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(resp.Parts[0], &parsed); err != nil {
+		t.Fatalf("failed to parse part JSON: %v", err)
+	}
+
+	if parsed["tool"] != "openpact_workspace_write" {
+		t.Errorf("expected tool field 'openpact_workspace_write', got %v", parsed["tool"])
+	}
+	if parsed["state"] != "running" {
+		t.Errorf("expected state field 'running', got %v", parsed["state"])
+	}
+}
+
+func TestForwardUnseenParts_UpdatesToolParts(t *testing.T) {
+	o := &OpenCode{}
+
+	// Simulate parts from GET reconciliation
+	parts := []json.RawMessage{
+		// Text part — already seen, should be skipped
+		json.RawMessage(`{"id":"p1","type":"text","text":"Hello"}`),
+		// Tool part — already seen, should be re-sent with IsUpdate
+		json.RawMessage(`{"id":"p2","type":"tool","tool":"openpact_memory_read","state":"completed"}`),
+		// New text part — never seen, should be forwarded
+		json.RawMessage(`{"id":"p3","type":"text","text":"World"}`),
+	}
+
+	seenParts := map[string]bool{
+		"p1": true, // Already seen via SSE
+		"p2": true, // Already seen via SSE
+	}
+
+	ch := make(chan Response, 10)
+	o.forwardUnseenParts(parts, "sess-1", seenParts, ch)
+	close(ch)
+
+	var responses []Response
+	for r := range ch {
+		responses = append(responses, r)
+	}
+
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 responses (tool update + new text), got %d", len(responses))
+	}
+
+	// First: tool part re-sent as update
+	if responses[0].PartType != "tool" || !responses[0].IsUpdate {
+		t.Errorf("expected tool part with IsUpdate=true, got type=%q isUpdate=%v", responses[0].PartType, responses[0].IsUpdate)
+	}
+	// Verify the tool name is preserved in the raw JSON
+	var toolPart map[string]interface{}
+	if err := json.Unmarshal(responses[0].Parts[0], &toolPart); err != nil {
+		t.Fatalf("failed to parse tool part: %v", err)
+	}
+	if toolPart["tool"] != "openpact_memory_read" {
+		t.Errorf("expected tool 'openpact_memory_read', got %v", toolPart["tool"])
+	}
+
+	// Second: new text part (not seen before)
+	if responses[1].Content != "World" || responses[1].IsUpdate {
+		t.Errorf("expected new text 'World' with IsUpdate=false, got content=%q isUpdate=%v", responses[1].Content, responses[1].IsUpdate)
 	}
 }
 

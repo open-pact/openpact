@@ -239,6 +239,18 @@ func (o *OpenCode) handlePartEvent(data json.RawMessage, sessionID string, seenP
 		return
 	}
 
+	// Second parse: capture the raw part JSON so tool/file/snapshot parts
+	// retain ALL original fields (e.g. "tool", "state") that the typed
+	// struct above doesn't declare.
+	var rawEvt struct {
+		Properties struct {
+			Part json.RawMessage `json:"part"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &rawEvt); err != nil {
+		return
+	}
+
 	part := evt.Properties.Part
 	if part.ID == "" {
 		return
@@ -279,13 +291,9 @@ func (o *OpenCode) handlePartEvent(data json.RawMessage, sessionID string, seenP
 		// Skip operational markers
 
 	default:
-		// tool, file, snapshot, etc. — forward the full part as raw JSON
-		partJSON, err := json.Marshal(evt.Properties.Part)
-		if err != nil {
-			return
-		}
+		// tool, file, snapshot, etc. — forward the raw JSON (preserves all fields)
 		ch <- Response{
-			Parts:     []json.RawMessage{partJSON},
+			Parts:     []json.RawMessage{rawEvt.Properties.Part},
 			SessionID: sessionID,
 			PartID:    part.ID,
 			PartType:  part.Type,
@@ -360,7 +368,9 @@ func (o *OpenCode) reconcile(sessionID, anchorID string, seenParts map[string]bo
 	}
 }
 
-// forwardUnseenParts sends only parts that weren't already delivered via SSE.
+// forwardUnseenParts sends parts that weren't already delivered via SSE, and
+// re-sends tool/file/snapshot parts as updates (since SSE may have delivered
+// them with incomplete fields like missing "tool" name).
 func (o *OpenCode) forwardUnseenParts(parts []json.RawMessage, sessionID string, seenParts map[string]bool, ch chan<- Response) {
 	for _, raw := range parts {
 		var peek struct {
@@ -372,23 +382,31 @@ func (o *OpenCode) forwardUnseenParts(parts []json.RawMessage, sessionID string,
 			continue
 		}
 
-		// Skip parts already sent via SSE
-		if peek.ID != "" && seenParts[peek.ID] {
-			continue
-		}
-
 		// Skip operational markers
 		if peek.Type == "step-start" || peek.Type == "step-finish" {
 			continue
 		}
 
+		alreadySeen := peek.ID != "" && seenParts[peek.ID]
+
+		// Text/thinking are fully represented in SSE — skip if already seen
+		if alreadySeen && (peek.Type == "text" || peek.Type == "reasoning" || peek.Type == "thinking") {
+			continue
+		}
+
+		// Tool/file/snapshot — re-send with IsUpdate so frontend replaces incomplete SSE data
+		if alreadySeen {
+			ch <- Response{Parts: []json.RawMessage{raw}, SessionID: sessionID, PartID: peek.ID, PartType: peek.Type, IsUpdate: true}
+			continue
+		}
+
 		switch peek.Type {
 		case "reasoning", "thinking":
-			ch <- Response{Thinking: peek.Text, SessionID: sessionID}
+			ch <- Response{Thinking: peek.Text, SessionID: sessionID, PartID: peek.ID, PartType: peek.Type}
 		case "text":
-			ch <- Response{Content: peek.Text, SessionID: sessionID}
+			ch <- Response{Content: peek.Text, SessionID: sessionID, PartID: peek.ID, PartType: peek.Type}
 		default:
-			ch <- Response{Parts: []json.RawMessage{raw}, SessionID: sessionID}
+			ch <- Response{Parts: []json.RawMessage{raw}, SessionID: sessionID, PartID: peek.ID, PartType: peek.Type}
 		}
 	}
 }
@@ -971,11 +989,12 @@ const MCPPort = 3100
 // mcpToken is the bearer token for authenticating with the MCP HTTP server.
 func BuildOpenCodeConfig(cfg Config, mcpToken string) map[string]interface{} {
 	config := map[string]interface{}{
-		// Disable ALL built-in filesystem/shell tools
+		// Disable ALL built-in tools — OpenPact provides capabilities via MCP
 		"tools": map[string]bool{
 			"bash": false, "write": false, "edit": false, "read": false,
 			"grep": false, "glob": false, "list": false, "patch": false,
 			"webfetch": false, "websearch": false,
+			"question": false, "task": false, "todowrite": false,
 		},
 		// Auto-allow our MCP tools
 		"permission": map[string]string{

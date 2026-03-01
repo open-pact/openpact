@@ -15,7 +15,8 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Added admin API endpoints (`GET/PUT /api/providers/:name/mode`) for remote control of per-channel detail modes.
 ### Changed
 - Updated the MCP server from a local standalone server triggered by OpenCode to an endpoint in the orchestrator, and passed it as a remote MCP server with auth token to OpenCode.
-- Cleared the default opencode agent prompt that were causing a "persona conflict" _as described by the llm) with the OpenPact assistant's own prompt. 
+- Cleared the default opencode agent prompt that were causing a "persona conflict" _as described by the llm) with the OpenPact assistant's own prompt.
+- Disabled additional OpenCode built-in tools (`question`, `task`, `todowrite`) that were still available to the AI outside of OpenPact's MCP security boundary.
 ### Fixed
 - Thinking/reasoning blocks (and tool/file/snapshot blocks) not displayed when loading historical messages on the sessions page. The Go `MessagePart` struct was dropping all fields except `type` and `text` during deserialization — replaced with `json.RawMessage` to pass OpenCode API responses through unmodified.
 - Invalid JSON scheme was being passed for tools. Gemini ignored it, but Claude was stricter.
