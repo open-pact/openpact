@@ -9,6 +9,7 @@ import {
   RadioOutline,
   CodeSlashOutline,
   LockClosedOutline,
+  TimerOutline,
   KeyOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
@@ -22,6 +23,7 @@ const menuOptions = [
   { label: 'Providers', key: 'providers', route: '/providers', icon: RadioOutline },
   { label: 'Scripts', key: 'scripts', route: '/scripts', icon: CodeSlashOutline },
   { label: 'Secrets', key: 'secrets', route: '/secrets', icon: LockClosedOutline },
+  { label: 'Schedules', key: 'schedules', route: '/schedules', icon: TimerOutline },
   { label: 'Engine Auth', key: 'engine-auth', route: '/engine-auth', icon: KeyOutline },
   { label: 'Settings', key: 'settings', route: '/settings', icon: SettingsOutline },
 ]
@@ -49,6 +51,7 @@ function activateCurrentRoute() {
   else if (path === '/providers') selectedMenuKey.value = 'providers'
   else if (path.startsWith('/scripts')) selectedMenuKey.value = 'scripts'
   else if (path === '/secrets') selectedMenuKey.value = 'secrets'
+  else if (path === '/schedules') selectedMenuKey.value = 'schedules'
   else if (path === '/engine-auth') selectedMenuKey.value = 'engine-auth'
   else if (path === '/settings') selectedMenuKey.value = 'settings'
   else selectedMenuKey.value = 'dashboard'

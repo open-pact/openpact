@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: Admin API
-description: REST API for authentication, scripts, secrets, and session management
+description: REST API for authentication, scripts, secrets, sessions, and schedule management
 ---
 
 # Admin API
@@ -920,6 +920,287 @@ Changing the default model only affects new sessions. Existing sessions continue
 
 ---
 
+## Schedule Endpoints
+
+Schedule endpoints manage [cron-based scheduled jobs](/docs/features/scheduling). All endpoints require authentication via Bearer token. Mutations automatically trigger a scheduler reload.
+
+### GET /api/schedules
+
+List all schedules.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+
+```json
+{
+  "schedules": [
+    {
+      "id": "a1b2c3d4e5f6g7h8",
+      "name": "Daily report",
+      "cron_expr": "0 9 * * 1-5",
+      "type": "script",
+      "enabled": true,
+      "script_name": "daily_report.star",
+      "output_target": {
+        "provider": "discord",
+        "channel_id": "channel:123456789"
+      },
+      "created_at": "2026-03-01T12:00:00Z",
+      "updated_at": "2026-03-01T12:00:00Z",
+      "last_run_at": "2026-03-01T09:00:00Z",
+      "last_run_status": "success",
+      "last_run_output": "Report generated successfully"
+    }
+  ]
+}
+```
+
+### POST /api/schedules
+
+Create a new schedule.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+
+```json
+{
+  "name": "Daily report",
+  "cron_expr": "0 9 * * 1-5",
+  "type": "script",
+  "enabled": true,
+  "script_name": "daily_report.star",
+  "output_target": {
+    "provider": "discord",
+    "channel_id": "channel:123456789"
+  }
+}
+```
+
+**Required fields:** `name`, `cron_expr`, `type`
+
+**Type-specific fields:**
+- `type: "script"` requires `script_name`
+- `type: "agent"` requires `prompt`
+
+**Response (201 Created):**
+
+```json
+{
+  "id": "a1b2c3d4e5f6g7h8",
+  "name": "Daily report",
+  "cron_expr": "0 9 * * 1-5",
+  "type": "script",
+  "enabled": true,
+  "script_name": "daily_report.star",
+  "output_target": {
+    "provider": "discord",
+    "channel_id": "channel:123456789"
+  },
+  "created_at": "2026-03-01T12:00:00Z",
+  "updated_at": "2026-03-01T12:00:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 400 | Invalid JSON, missing required fields, or invalid cron expression |
+
+### GET /api/schedules/:id
+
+Get a single schedule by ID.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+
+```json
+{
+  "id": "a1b2c3d4e5f6g7h8",
+  "name": "Daily report",
+  "cron_expr": "0 9 * * 1-5",
+  "type": "script",
+  "enabled": true,
+  "script_name": "daily_report.star",
+  "output_target": {
+    "provider": "discord",
+    "channel_id": "channel:123456789"
+  },
+  "created_at": "2026-03-01T12:00:00Z",
+  "updated_at": "2026-03-01T12:00:00Z",
+  "last_run_at": "2026-03-01T09:00:00Z",
+  "last_run_status": "success",
+  "last_run_error": "",
+  "last_run_output": "Report generated successfully"
+}
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 404 | Schedule not found |
+
+### PUT /api/schedules/:id
+
+Update an existing schedule. Only provided fields are updated.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+
+```json
+{
+  "name": "Morning report",
+  "cron_expr": "0 10 * * 1-5"
+}
+```
+
+**Response:**
+
+```json
+{
+  "id": "a1b2c3d4e5f6g7h8",
+  "name": "Morning report",
+  "cron_expr": "0 10 * * 1-5",
+  "type": "script",
+  "enabled": true,
+  "script_name": "daily_report.star",
+  "created_at": "2026-03-01T12:00:00Z",
+  "updated_at": "2026-03-01T14:00:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 400 | Invalid cron expression or invalid field values |
+| 404 | Schedule not found |
+
+### DELETE /api/schedules/:id
+
+Delete a schedule.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+
+```
+204 No Content
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 404 | Schedule not found |
+
+### POST /api/schedules/:id/enable
+
+Enable a schedule.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+
+```json
+{
+  "status": "enabled"
+}
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 404 | Schedule not found |
+
+### POST /api/schedules/:id/disable
+
+Disable a schedule. The job stops running but its configuration is preserved.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+
+```json
+{
+  "status": "disabled"
+}
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 404 | Schedule not found |
+
+### POST /api/schedules/:id/run
+
+Trigger an immediate run of a schedule. The job executes in a background goroutine.
+
+**Request Headers:**
+
+```
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+
+```json
+{
+  "status": "triggered"
+}
+```
+
+**Errors:**
+
+| Status | Description |
+|--------|-------------|
+| 400 | Invalid schedule or execution error |
+| 404 | Schedule not found |
+| 503 | Scheduler not available |
+
+:::note
+The run endpoint triggers the job asynchronously. The response confirms the job was triggered, not that it completed. Check the schedule's `last_run_*` fields for the result.
+:::
+
+---
+
 ## Error Responses
 
 All error responses follow a consistent format:
@@ -1061,3 +1342,4 @@ curl -X POST http://localhost:8080/api/scripts/weather.star/approve \
 - [Authentication](/docs/admin/authentication) - Detailed auth configuration
 - [Managing Scripts](/docs/admin/managing-scripts) - Script workflow guide
 - [Secrets Management](/docs/admin/secrets-management) - Secrets best practices
+- [Schedule Management](/docs/admin/schedule-management) - Schedule workflow guide

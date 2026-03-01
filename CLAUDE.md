@@ -21,6 +21,9 @@ make docker                 # Build Docker image
 # Run a single Go test
 go test -v -run TestName ./internal/packagename/
 
+# Node.js — this project uses nvm. Always run `nvm use` before Node operations.
+nvm use
+
 # Admin UI (Vue 3 + Vite)
 cd admin-ui && npm install && npm run build   # Build (output: admin-ui/dist/)
 cd admin-ui && npm run dev                     # Dev server with API proxy to :8888

@@ -17,7 +17,6 @@ type Config struct {
 	WorkspacePath string
 	AIDataDir     string
 	Allowlist     []string
-	DevMode       bool
 	AccessExpiry  time.Duration
 	RefreshExpiry time.Duration
 	EngineType    string // "opencode"
@@ -29,7 +28,6 @@ func DefaultConfig() Config {
 		Bind:          "localhost:8080",
 		DataDir:       "./data",
 		ScriptsDir:    "./scripts",
-		DevMode:       false,
 		AccessExpiry:  15 * time.Minute,
 		RefreshExpiry: 72 * time.Hour,
 	}
@@ -48,6 +46,8 @@ type Server struct {
 	secretHandlers     *SecretHandlers
 	aiSessionHandlers  *SessionHandlers
 	providerHandlers   *ProviderHandlers
+	scheduleStore      *ScheduleStore
+	scheduleHandlers   *ScheduleHandlers
 	secureCookie       bool
 }
 
@@ -78,7 +78,7 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 
-	secureCookie := ShouldUseSecureCookies(config.Bind, config.DevMode)
+	secureCookie := ShouldUseSecureCookies(config.Bind)
 
 	engineType := config.EngineType
 	if engineType == "" {
@@ -87,6 +87,7 @@ func NewServer(config Config) (*Server, error) {
 
 	secretStore := NewSecretStore(config.DataDir)
 	providerStore := NewProviderStore(config.DataDir)
+	scheduleStore := NewScheduleStore(config.DataDir)
 
 	return &Server{
 		config:             config,
@@ -99,6 +100,8 @@ func NewServer(config Config) (*Server, error) {
 		engineAuthHandlers: NewEngineAuthHandlers(engineType),
 		secretHandlers:     NewSecretHandlers(secretStore, nil),
 		providerHandlers:   NewProviderHandlers(providerStore),
+		scheduleStore:      scheduleStore,
+		scheduleHandlers:   NewScheduleHandlers(scheduleStore),
 		secureCookie:       secureCookie,
 	}, nil
 }
@@ -141,6 +144,9 @@ func (s *Server) Handler() http.Handler {
 
 	// Provider management endpoints
 	s.registerProviderRoutes(mux)
+
+	// Schedule management endpoints
+	s.registerScheduleRoutes(mux)
 
 	// Apply setup middleware to the entire API
 	return RequireSetupMiddleware(s.users, s.config.DataDir)(mux)
@@ -361,6 +367,33 @@ func (s *Server) SetChannelModeAPI(api ChannelModeAPI) {
 // ProviderStore returns the provider store.
 func (s *Server) ProviderStore() *ProviderStore {
 	return s.providerHandlers.store
+}
+
+// ScheduleStore returns the schedule store.
+func (s *Server) ScheduleStore() *ScheduleStore {
+	return s.scheduleStore
+}
+
+// SetSchedulerAPI sets the scheduler API for schedule management.
+func (s *Server) SetSchedulerAPI(api SchedulerAPI) {
+	s.scheduleHandlers.SetSchedulerAPI(api)
+}
+
+// registerScheduleRoutes adds schedule management routes to a mux.
+func (s *Server) registerScheduleRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/schedules", s.withAuth(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.scheduleHandlers.ListSchedules(w, r)
+		case http.MethodPost:
+			s.scheduleHandlers.CreateSchedule(w, r)
+		default:
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		}
+	}))
+	mux.HandleFunc("/api/schedules/", s.withAuth(func(w http.ResponseWriter, r *http.Request) {
+		s.scheduleHandlers.HandleScheduleByID(w, r)
+	}))
 }
 
 // handleVersion returns the application version.

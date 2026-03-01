@@ -18,6 +18,7 @@ type RegistrationConfig struct {
 	Script        *ScriptRegistrationConfig // nil if not configured
 	Chat          ChatProviderLookup        // nil for standalone mode
 	Models        ModelLookup               // nil for standalone mode
+	Scheduler     SchedulerLookup           // nil for standalone mode
 	Allowlist     []string          // Script allowlist for admin
 }
 
@@ -98,6 +99,11 @@ func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 	// Model tools
 	if cfg.Models != nil {
 		RegisterModelTools(srv, cfg.Models)
+	}
+
+	// Schedule tools
+	if cfg.Scheduler != nil {
+		RegisterScheduleTools(srv, cfg.Scheduler)
 	}
 }
 

@@ -202,10 +202,7 @@ func (m *JWTManager) AuthMiddleware(next http.Handler) http.Handler {
 
 // ShouldUseSecureCookies determines if secure cookies should be used.
 // Returns false for localhost development, true for production.
-func ShouldUseSecureCookies(bind string, devMode bool) bool {
-	if devMode {
-		return false
-	}
+func ShouldUseSecureCookies(bind string) bool {
 	if strings.HasPrefix(bind, "localhost") || strings.HasPrefix(bind, "127.0.0.1") {
 		return false
 	}

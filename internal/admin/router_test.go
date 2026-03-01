@@ -18,7 +18,6 @@ func setupTestServer(t *testing.T) *Server {
 		ScriptsDir:    tmpDir + "/scripts",
 		WorkspacePath: tmpDir,
 		AIDataDir:     tmpDir,
-		DevMode:       true,
 		AccessExpiry:  DefaultConfig().AccessExpiry,
 		RefreshExpiry: DefaultConfig().RefreshExpiry,
 	}

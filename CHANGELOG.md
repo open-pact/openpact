@@ -4,6 +4,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [staging]
 ### Added
+- Added cron-based job scheduling system. Supports two job types: "script" (runs a Starlark script) and "agent" (starts a new AI session with a prompt). Jobs are managed via MCP tools (`schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_enable`, `schedule_disable`), admin API endpoints (`/api/schedules`), and a new Schedules page in the admin UI. Jobs can optionally send output to a chat channel. Persists to `secure/data/schedules.json`.
 - Added rendering of Markdown, and code block in to the "/sessions" page of the admin UI
 - Added MCP tools so the AI can help the user switch the default model used. It list all available models, and will switch it for them when requested.
 - Added a settings page in the Admin area to switch the default model used in new sessions.

@@ -298,21 +298,19 @@ func TestAuthMiddleware(t *testing.T) {
 func TestShouldUseSecureCookies(t *testing.T) {
 	tests := []struct {
 		bind     string
-		devMode  bool
 		expected bool
 	}{
-		{"localhost:8080", false, false},
-		{"127.0.0.1:8080", false, false},
-		{"0.0.0.0:8080", false, true},
-		{"192.168.1.1:8080", false, true},
-		{"0.0.0.0:8080", true, false}, // devMode overrides
+		{"localhost:8080", false},
+		{"127.0.0.1:8080", false},
+		{"0.0.0.0:8080", true},
+		{"192.168.1.1:8080", true},
 	}
 
 	for _, tt := range tests {
-		result := ShouldUseSecureCookies(tt.bind, tt.devMode)
+		result := ShouldUseSecureCookies(tt.bind)
 		if result != tt.expected {
-			t.Errorf("ShouldUseSecureCookies(%q, %v) = %v, expected %v",
-				tt.bind, tt.devMode, result, tt.expected)
+			t.Errorf("ShouldUseSecureCookies(%q) = %v, expected %v",
+				tt.bind, result, tt.expected)
 		}
 	}
 }

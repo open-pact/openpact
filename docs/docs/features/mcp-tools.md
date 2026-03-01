@@ -598,6 +598,174 @@ Reload scripts from disk.
 
 ---
 
+### Schedule Tools
+
+Tools for managing [scheduled jobs](/docs/features/scheduling). Schedules run Starlark scripts or AI agent sessions on a cron timer.
+
+#### schedule_list
+
+List all scheduled jobs with their status and last run info.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| - | - | - | No parameters |
+
+**Example:**
+```json
+{
+  "name": "schedule_list",
+  "arguments": {}
+}
+```
+
+**Returns:** List of schedules with ID, name, type, cron expression, enabled status, output target, and last run info.
+
+---
+
+#### schedule_create
+
+Create a new scheduled job. Validates the cron expression at creation time.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Human-readable name for the schedule |
+| `cron_expr` | string | Yes | Cron expression (5 fields: min hour dom month dow) |
+| `type` | string | Yes | Job type: `"script"` or `"agent"` |
+| `script_name` | string | No | Script filename (required for type `"script"`, e.g. `"my_script.star"`) |
+| `prompt` | string | No | Prompt for AI session (required for type `"agent"`) |
+| `enabled` | boolean | No | Whether the schedule is active (default: `true`) |
+| `output_provider` | string | No | Chat provider to send output to (e.g. `"discord"`) |
+| `output_channel` | string | No | Channel ID to send output to (e.g. `"channel:123456"`) |
+
+**Example (script job):**
+```json
+{
+  "name": "schedule_create",
+  "arguments": {
+    "name": "Daily report",
+    "cron_expr": "0 9 * * 1-5",
+    "type": "script",
+    "script_name": "daily_report.star"
+  }
+}
+```
+
+**Example (agent job with output):**
+```json
+{
+  "name": "schedule_create",
+  "arguments": {
+    "name": "Status update",
+    "cron_expr": "0 */2 * * *",
+    "type": "agent",
+    "prompt": "Summarize today's open issues and post a status update.",
+    "output_provider": "discord",
+    "output_channel": "channel:123456789"
+  }
+}
+```
+
+**Returns:** Confirmation with the new schedule's ID and name.
+
+---
+
+#### schedule_update
+
+Update an existing scheduled job by ID. Only provided fields are updated.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Schedule ID to update |
+| `name` | string | No | New name |
+| `cron_expr` | string | No | New cron expression |
+| `type` | string | No | New job type: `"script"` or `"agent"` |
+| `script_name` | string | No | New script name |
+| `prompt` | string | No | New prompt |
+| `output_provider` | string | No | Chat provider for output delivery |
+| `output_channel` | string | No | Channel ID for output delivery |
+
+**Example:**
+```json
+{
+  "name": "schedule_update",
+  "arguments": {
+    "id": "a1b2c3d4e5f6g7h8",
+    "cron_expr": "0 10 * * 1-5",
+    "name": "Morning report"
+  }
+}
+```
+
+**Returns:** Confirmation with the updated schedule's ID and name.
+
+---
+
+#### schedule_delete
+
+Delete a scheduled job by ID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Schedule ID to delete |
+
+**Example:**
+```json
+{
+  "name": "schedule_delete",
+  "arguments": {
+    "id": "a1b2c3d4e5f6g7h8"
+  }
+}
+```
+
+**Returns:** Confirmation that the schedule was deleted.
+
+---
+
+#### schedule_enable
+
+Enable a scheduled job by ID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Schedule ID to enable |
+
+**Example:**
+```json
+{
+  "name": "schedule_enable",
+  "arguments": {
+    "id": "a1b2c3d4e5f6g7h8"
+  }
+}
+```
+
+**Returns:** Confirmation that the schedule was enabled.
+
+---
+
+#### schedule_disable
+
+Disable a scheduled job by ID. The job stops running but its configuration is preserved.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Schedule ID to disable |
+
+**Example:**
+```json
+{
+  "name": "schedule_disable",
+  "arguments": {
+    "id": "a1b2c3d4e5f6g7h8"
+  }
+}
+```
+
+**Returns:** Confirmation that the schedule was disabled.
+
+---
+
 ## Tool Summary Table
 
 | Tool | Category | Description |
@@ -622,6 +790,12 @@ Reload scripts from disk.
 | `script_run` | Scripts | Run named scripts |
 | `script_exec` | Scripts | Execute Starlark code |
 | `script_reload` | Scripts | Reload scripts from disk |
+| `schedule_list` | Schedules | List all scheduled jobs |
+| `schedule_create` | Schedules | Create a new scheduled job |
+| `schedule_update` | Schedules | Update an existing scheduled job |
+| `schedule_delete` | Schedules | Delete a scheduled job |
+| `schedule_enable` | Schedules | Enable a scheduled job |
+| `schedule_disable` | Schedules | Disable a scheduled job |
 
 ## Related Documentation
 

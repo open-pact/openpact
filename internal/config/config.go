@@ -29,7 +29,6 @@ type AdminConfig struct {
 	Enabled   bool     `yaml:"enabled"`   // Enable admin UI
 	Bind      string   `yaml:"bind"`      // Address to bind (e.g., "localhost:8080")
 	Allowlist []string `yaml:"allowlist"` // Always-approved scripts
-	DevMode   bool     `yaml:"dev_mode"`  // Disable secure cookies for localhost
 }
 
 // LoggingConfig configures structured logging
@@ -186,7 +185,6 @@ func Default() *Config {
 		Admin: AdminConfig{
 			Enabled: true,
 			Bind:    "localhost:8080",
-			DevMode: true,
 		},
 	}
 }

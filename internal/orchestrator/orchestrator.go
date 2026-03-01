@@ -21,6 +21,7 @@ import (
 	opcontext "github.com/open-pact/openpact/internal/context"
 	"github.com/open-pact/openpact/internal/engine"
 	"github.com/open-pact/openpact/internal/mcp"
+	"github.com/open-pact/openpact/internal/scheduler"
 	"github.com/open-pact/openpact/internal/providers/discord"
 	"github.com/open-pact/openpact/internal/providers/slack"
 	"github.com/open-pact/openpact/internal/providers/telegram"
@@ -37,6 +38,7 @@ type Orchestrator struct {
 	scriptStore   *admin.ScriptStore // Script approval store (optional)
 	providerStore *admin.ProviderStore
 	modelStore    *admin.ModelPreferenceStore
+	scheduler     *scheduler.Scheduler
 
 	// MCP HTTP server (in-process, remote transport for OpenCode)
 	mcpHTTPServer *http.Server
@@ -170,6 +172,27 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 			MaxExecutionMs: cfg.Starlark.MaxExecutionMs,
 		}
 	}
+
+	// Initialize scheduler
+	scheduleStore := admin.NewScheduleStore(cfg.Workspace.DataDir())
+	schedCfg := scheduler.Config{
+		ScriptsDir:     cfg.Workspace.ScriptsDir(),
+		MaxExecutionMs: cfg.Starlark.MaxExecutionMs,
+	}
+	// Load secrets for scheduler's script execution
+	secretStore := admin.NewSecretStore(cfg.Workspace.DataDir())
+	if secrets, err := secretStore.All(); err == nil {
+		schedCfg.Secrets = secrets
+	}
+	// Script approval store
+	if cfg.Admin.Enabled {
+		scriptStore, err := admin.NewScriptStore(cfg.Workspace.ScriptsDir(), cfg.Workspace.DataDir(), cfg.Admin.Allowlist)
+		if err == nil {
+			schedCfg.ScriptStore = scriptStore
+		}
+	}
+	o.scheduler = scheduler.New(scheduleStore, schedCfg)
+	regCfg.Scheduler = o
 
 	// Register all tools
 	mcp.RegisterAllTools(o.mcpServer, regCfg)
@@ -431,6 +454,15 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	o.loadChannelSessions()
 	o.loadChannelModes()
 
+	// Wire scheduler APIs now that engine is ready
+	o.scheduler.SetEngineAPI(o)
+	o.scheduler.SetChatAPI(o)
+
+	// Start scheduler
+	if err := o.scheduler.Start(ctx); err != nil {
+		log.Printf("Warning: failed to start scheduler: %v", err)
+	}
+
 	// Start enabled providers from store (failures are non-fatal)
 	o.startEnabledProviders()
 
@@ -484,6 +516,11 @@ func (o *Orchestrator) shutdown() error {
 	log.Println("OpenPact orchestrator shutting down...")
 
 	var errs []error
+
+	// Stop scheduler
+	if o.scheduler != nil {
+		o.scheduler.Stop()
+	}
 
 	// Stop all running chat providers
 	o.providerMu.Lock()
@@ -1137,6 +1174,71 @@ func (o *Orchestrator) SetDefaultModel(provider, model string) error {
 	}
 	log.Printf("Default model set to %s/%s", provider, model)
 	return nil
+}
+
+// Schedule management methods (implements mcp.SchedulerLookup + admin.SchedulerAPI)
+
+// ScheduleList returns all schedules from the store.
+func (o *Orchestrator) List() ([]*admin.Schedule, error) {
+	return o.scheduler.Store().List()
+}
+
+// ScheduleGet returns a schedule by ID.
+func (o *Orchestrator) Get(id string) (*admin.Schedule, error) {
+	return o.scheduler.Store().Get(id)
+}
+
+// ScheduleCreate creates a new schedule and reloads the scheduler.
+func (o *Orchestrator) Create(sched *admin.Schedule) (*admin.Schedule, error) {
+	created, err := o.scheduler.Store().Create(sched)
+	if err != nil {
+		return nil, err
+	}
+	o.scheduler.Reload()
+	return created, nil
+}
+
+// ScheduleUpdate updates a schedule and reloads the scheduler.
+func (o *Orchestrator) Update(id string, updates *admin.Schedule) (*admin.Schedule, error) {
+	updated, err := o.scheduler.Store().Update(id, updates)
+	if err != nil {
+		return nil, err
+	}
+	o.scheduler.Reload()
+	return updated, nil
+}
+
+// ScheduleDelete deletes a schedule and reloads the scheduler.
+func (o *Orchestrator) Delete(id string) error {
+	if err := o.scheduler.Store().Delete(id); err != nil {
+		return err
+	}
+	o.scheduler.Reload()
+	return nil
+}
+
+// ScheduleSetEnabled enables or disables a schedule and reloads.
+func (o *Orchestrator) SetEnabled(id string, enabled bool) error {
+	if err := o.scheduler.Store().SetEnabled(id, enabled); err != nil {
+		return err
+	}
+	o.scheduler.Reload()
+	return nil
+}
+
+// RunNow triggers immediate execution of a schedule.
+func (o *Orchestrator) RunNow(id string) error {
+	return o.scheduler.RunNow(id)
+}
+
+// Reload reloads the scheduler's cron entries from the store.
+func (o *Orchestrator) Reload() error {
+	return o.scheduler.Reload()
+}
+
+// Scheduler returns the scheduler instance.
+func (o *Orchestrator) Scheduler() *scheduler.Scheduler {
+	return o.scheduler
 }
 
 // ReloadContext reloads context files (SOUL, USER, MEMORY)
