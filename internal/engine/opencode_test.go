@@ -117,6 +117,30 @@ func TestBuildOpenCodeConfig_NoMCPWhenNoToken(t *testing.T) {
 	}
 }
 
+func TestBuildOpenCodeConfig_OverridesDefaultAgentPrompts(t *testing.T) {
+	cfg := Config{}
+	config := BuildOpenCodeConfig(cfg, "test-token")
+
+	agentSection, ok := config["agent"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected agent section in config")
+	}
+
+	// Both "build" and "plan" agents should have custom prompts to replace
+	// OpenCode's hardcoded defaults (which conflict with OpenPact's security model)
+	for _, name := range []string{"build", "plan"} {
+		agent, ok := agentSection[name].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected %q agent config", name)
+		}
+
+		prompt, ok := agent["prompt"].(string)
+		if !ok || prompt == "" {
+			t.Errorf("expected %q agent to have a non-empty prompt override", name)
+		}
+	}
+}
+
 func TestBuildOpenCodeConfig_ValidJSON(t *testing.T) {
 	cfg := Config{
 		WorkDir: "/workspace",

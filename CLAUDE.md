@@ -129,6 +129,17 @@ Key path methods on `WorkspaceConfig`:
 - `DataDir()` → `<workspace>/secure/data`
 - `ScriptsDir()` → `<workspace>/ai-data/scripts`
 
+## Critical: Admin Route Registration — DUAL HANDLER RULE
+
+**There are TWO handler methods in `internal/admin/` that BOTH need API routes registered:**
+
+1. **`Handler()`** in `router.go` — API-only mode (standalone admin server)
+2. **`HandlerWithUI()`** in `embed.go` — API + embedded SPA mode (production/orchestrator)
+
+**When adding new API routes, you MUST register them in BOTH methods.** If a route is only added to `Handler()` but not `HandlerWithUI()`, the route will work in API-only mode but silently fail in production — the SPA catch-all (`mux.Handle("/", spaHandler)`) will serve `index.html` instead of the API response, causing "Failed to load" errors on the frontend.
+
+This has been a repeated source of bugs. Always check both methods when adding or modifying routes.
+
 ## Key Design Decisions
 
 - **No database** — All persistence is file-based JSON (users, script approvals)

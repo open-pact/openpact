@@ -981,6 +981,19 @@ func BuildOpenCodeConfig(cfg Config, mcpToken string) map[string]interface{} {
 		"permission": map[string]string{
 			"openpact_*": "allow",
 		},
+		// Override the default "build" agent prompt. OpenCode's hardcoded default
+		// tells the AI it's a CLI coding agent with shell/file access, which
+		// directly contradicts OpenPact's security model. We replace it with a
+		// minimal prompt — the real context (identity, tools, memory) is injected
+		// by OpenPact via the "system" parameter on each message.
+		"agent": map[string]interface{}{
+			"build": map[string]interface{}{
+				"prompt": "You are an AI assistant. Your capabilities, identity, and instructions are provided in the system message with each conversation. Follow those instructions.",
+			},
+			"plan": map[string]interface{}{
+				"prompt": "You are an AI assistant in planning mode. Your capabilities, identity, and instructions are provided in the system message with each conversation. Follow those instructions. In this mode, focus on analysis and planning rather than taking actions.",
+			},
+		},
 	}
 
 	if mcpToken == "" {

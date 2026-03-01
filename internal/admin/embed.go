@@ -138,6 +138,9 @@ func (s *Server) HandlerWithUI() (http.Handler, error) {
 	// Provider management endpoints
 	s.registerProviderRoutes(mux)
 
+	// Schedule management endpoints
+	s.registerScheduleRoutes(mux)
+
 	// Static files and SPA fallback
 	mux.Handle("/", spaHandler)
 
