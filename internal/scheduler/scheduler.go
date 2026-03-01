@@ -228,6 +228,17 @@ func (s *Scheduler) executeJob(sched *admin.Schedule) {
 		log.Printf("[scheduler] Failed to update last run for %q: %v", sched.Name, err)
 	}
 
+	// Auto-disable run-once schedules after execution.
+	// Re-read from store to get the current state (not the cached copy).
+	if current, err := s.store.Get(sched.ID); err == nil && current.RunOnce {
+		log.Printf("[scheduler] Run-once job %q (%s) completed, auto-disabling", sched.Name, sched.ID)
+		if err := s.store.SetEnabled(sched.ID, false); err != nil {
+			log.Printf("[scheduler] Failed to auto-disable run-once job %q: %v", sched.Name, err)
+		} else {
+			s.Reload()
+		}
+	}
+
 	// Send output to target if configured and there's output
 	if sched.OutputTarget != nil && output != "" {
 		s.sendOutput(sched, output, execErr)

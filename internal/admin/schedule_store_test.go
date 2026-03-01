@@ -229,6 +229,61 @@ func TestScheduleStore_UpdateLastRun(t *testing.T) {
 	}
 }
 
+func TestScheduleStore_RunOnce(t *testing.T) {
+	dir, err := os.MkdirTemp("", "schedule-store-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	store := NewScheduleStore(dir)
+
+	sched, err := store.Create(&Schedule{
+		Name:       "one-off-job",
+		CronExpr:   "0 3 * * *",
+		Type:       "script",
+		Enabled:    true,
+		RunOnce:    true,
+		ScriptName: "migrate.star",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if !sched.RunOnce {
+		t.Error("expected RunOnce to be true after create")
+	}
+
+	// Verify round-trip through Get
+	got, err := store.Get(sched.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if !got.RunOnce {
+		t.Error("expected RunOnce to be true after Get")
+	}
+
+	// Verify it appears in List
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 schedule, got %d", len(list))
+	}
+	if !list[0].RunOnce {
+		t.Error("expected RunOnce to be true in List")
+	}
+
+	// Verify Update can set RunOnce to false
+	updated, err := store.Update(sched.ID, &Schedule{RunOnce: false})
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+	if updated.RunOnce {
+		t.Error("expected RunOnce to be false after update")
+	}
+}
+
 func TestScheduleStore_ValidationErrors(t *testing.T) {
 	dir, err := os.MkdirTemp("", "schedule-store-test")
 	if err != nil {

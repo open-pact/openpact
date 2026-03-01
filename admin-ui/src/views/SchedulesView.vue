@@ -35,6 +35,7 @@ const defaultForm = () => ({
   cron_expr: '',
   type: 'script',
   enabled: true,
+  run_once: false,
   script_name: '',
   prompt: '',
   output_provider: '',
@@ -52,6 +53,17 @@ const columns = [
   {
     title: 'Name',
     key: 'name',
+    render(row) {
+      if (row.run_once) {
+        return h(NSpace, { size: 6, align: 'center' }, {
+          default: () => [
+            row.name,
+            h(NTag, { size: 'tiny', round: true, bordered: false }, { default: () => 'Once' }),
+          ],
+        })
+      }
+      return row.name
+    },
   },
   {
     title: 'Type',
@@ -164,6 +176,7 @@ function openEditModal(row) {
     cron_expr: row.cron_expr,
     type: row.type,
     enabled: row.enabled,
+    run_once: row.run_once || false,
     script_name: row.script_name || '',
     prompt: row.prompt || '',
     output_provider: row.output_target?.provider || '',
@@ -198,6 +211,7 @@ async function saveSchedule() {
       cron_expr: form.value.cron_expr,
       type: form.value.type,
       enabled: form.value.enabled,
+      run_once: form.value.run_once,
     }
 
     if (form.value.type === 'script') {
@@ -356,6 +370,9 @@ onMounted(loadSchedules)
         </n-form-item>
         <n-form-item label="Enabled">
           <n-switch v-model:value="form.enabled" />
+        </n-form-item>
+        <n-form-item label="Run Once">
+          <n-switch v-model:value="form.run_once" />
         </n-form-item>
         <n-form-item label="Output Provider (optional)">
           <n-input

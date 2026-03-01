@@ -618,7 +618,7 @@ List all scheduled jobs with their status and last run info.
 }
 ```
 
-**Returns:** List of schedules with ID, name, type, cron expression, enabled status, output target, and last run info.
+**Returns:** List of schedules with ID, name, type, cron expression, enabled status, run_once flag, output target, and last run info.
 
 ---
 
@@ -636,6 +636,7 @@ Create a new scheduled job. Validates the cron expression at creation time.
 | `enabled` | boolean | No | Whether the schedule is active (default: `true`) |
 | `output_provider` | string | No | Chat provider to send output to (e.g. `"discord"`) |
 | `output_channel` | string | No | Channel ID to send output to (e.g. `"channel:123456"`) |
+| `run_once` | boolean | No | If `true`, the schedule auto-disables after one execution |
 
 **Example (script job):**
 ```json
@@ -683,6 +684,7 @@ Update an existing scheduled job by ID. Only provided fields are updated.
 | `prompt` | string | No | New prompt |
 | `output_provider` | string | No | Chat provider for output delivery |
 | `output_channel` | string | No | Channel ID for output delivery |
+| `run_once` | boolean | No | If `true`, the schedule auto-disables after one execution |
 
 **Example:**
 ```json

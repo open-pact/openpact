@@ -64,6 +64,9 @@ func scheduleListTool(lookup SchedulerLookup) *Tool {
 						"channel_id": s.OutputTarget.ChannelID,
 					}
 				}
+				if s.RunOnce {
+					entry["run_once"] = true
+				}
 				if s.LastRunAt != nil {
 					entry["last_run_at"] = s.LastRunAt.Format("2006-01-02T15:04:05Z")
 					entry["last_run_status"] = s.LastRunStatus
@@ -119,6 +122,10 @@ func scheduleCreateTool(lookup SchedulerLookup) *Tool {
 					"type":        "string",
 					"description": "Optional: channel ID to send output to (e.g. 'channel:123456')",
 				},
+				"run_once": map[string]interface{}{
+					"type":        "boolean",
+					"description": "If true, the schedule auto-disables after one execution. Useful for deferred one-off tasks.",
+				},
 			},
 			"required": []string{"name", "cron_expr", "type"},
 		},
@@ -142,11 +149,14 @@ func scheduleCreateTool(lookup SchedulerLookup) *Tool {
 				enabled = e
 			}
 
+			runOnce, _ := args["run_once"].(bool)
+
 			sched := &admin.Schedule{
 				Name:       name,
 				CronExpr:   cronExpr,
 				Type:       jobType,
 				Enabled:    enabled,
+				RunOnce:    runOnce,
 				ScriptName: scriptName,
 				Prompt:     prompt,
 			}
@@ -212,6 +222,10 @@ func scheduleUpdateTool(lookup SchedulerLookup) *Tool {
 					"type":        "string",
 					"description": "Channel ID for output delivery",
 				},
+				"run_once": map[string]interface{}{
+					"type":        "boolean",
+					"description": "If true, the schedule auto-disables after one execution",
+				},
 			},
 			"required": []string{"id"},
 		},
@@ -229,12 +243,15 @@ func scheduleUpdateTool(lookup SchedulerLookup) *Tool {
 				}
 			}
 
+			runOnce, _ := args["run_once"].(bool)
+
 			updates := &admin.Schedule{
 				Name:       strArg(args, "name"),
 				CronExpr:   strArg(args, "cron_expr"),
 				Type:       strArg(args, "type"),
 				ScriptName: strArg(args, "script_name"),
 				Prompt:     strArg(args, "prompt"),
+				RunOnce:    runOnce,
 			}
 
 			outputProvider := strArg(args, "output_provider")

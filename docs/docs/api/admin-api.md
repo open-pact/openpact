@@ -993,6 +993,9 @@ Content-Type: application/json
 - `type: "script"` requires `script_name`
 - `type: "agent"` requires `prompt`
 
+**Optional fields:**
+- `run_once` (boolean) — If `true`, the schedule auto-disables after one execution
+
 **Response (201 Created):**
 
 ```json

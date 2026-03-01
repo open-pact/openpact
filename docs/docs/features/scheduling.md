@@ -9,6 +9,12 @@ OpenPact includes a cron-based job scheduling system that lets you create, manag
 
 The scheduler uses [`robfig/cron/v3`](https://github.com/robfig/cron) internally — not system cron — so it works identically across all platforms including Docker.
 
+## Run-Once Schedules
+
+Schedules can be configured as **run-once** (one-off) jobs by setting `run_once: true`. When a run-once schedule completes execution (whether success or error), the scheduler automatically disables it. This is useful for deferred tasks like "run this script at 3 AM tonight" or "send a summary on Friday at 5 PM".
+
+The schedule is not deleted — only disabled — so you can still see its last run result and re-enable it if needed.
+
 ## Job Types
 
 ### Script Jobs
@@ -102,6 +108,21 @@ The AI agent can manage schedules through 6 [MCP tools](/docs/features/mcp-tools
     "script_name": "daily_report.star",
     "output_provider": "discord",
     "output_channel": "channel:123456789"
+  }
+}
+```
+
+**Run-once example** — run a script at 3 AM tonight and auto-disable:
+
+```json
+{
+  "name": "schedule_create",
+  "arguments": {
+    "name": "One-time migration",
+    "cron_expr": "0 3 * * *",
+    "type": "script",
+    "script_name": "migrate.star",
+    "run_once": true
   }
 }
 ```

@@ -60,6 +60,7 @@ The table shows:
 | **Script Name** | *(Script type only)* Filename of the script (e.g., `daily_report.star`) |
 | **Prompt** | *(Agent type only)* The prompt to send to the AI session |
 | **Enabled** | Whether the schedule starts active |
+| **Run Once** | If enabled, the schedule auto-disables after one execution |
 | **Output Provider** | *(Optional)* Chat provider for output delivery (e.g., `discord`) |
 | **Output Channel** | *(Optional)* Channel ID for output delivery (e.g., `channel:123456`) |
 
@@ -99,6 +100,12 @@ The scheduler automatically reloads to pick up changes.
 :::note
 Editing a schedule does not reset its last run information.
 :::
+
+## Run-Once Schedules
+
+Toggle **Run Once** in the create/edit form to create a one-off job. After the job runs (success or error), the scheduler automatically disables it. This is useful for deferred tasks like "run this script at 3 AM tonight".
+
+The schedule is preserved (not deleted) after running, so you can view its results and re-enable it if needed. Run-once schedules are marked with an "Once" tag in the table.
 
 ## Enabling and Disabling
 

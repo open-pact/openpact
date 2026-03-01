@@ -28,6 +28,7 @@ type Schedule struct {
 	CronExpr      string        `json:"cron_expr"`
 	Type          string        `json:"type"` // "script" or "agent"
 	Enabled       bool          `json:"enabled"`
+	RunOnce       bool          `json:"run_once,omitempty"`
 	ScriptName    string        `json:"script_name,omitempty"`
 	Prompt        string        `json:"prompt,omitempty"`
 	OutputTarget  *OutputTarget `json:"output_target,omitempty"`
@@ -198,6 +199,7 @@ func (s *ScheduleStore) Create(sched *Schedule) (*Schedule, error) {
 		CronExpr:     sched.CronExpr,
 		Type:         sched.Type,
 		Enabled:      sched.Enabled,
+		RunOnce:      sched.RunOnce,
 		ScriptName:   sched.ScriptName,
 		Prompt:       sched.Prompt,
 		OutputTarget: sched.OutputTarget,
@@ -255,6 +257,7 @@ func (s *ScheduleStore) Update(id string, updates *Schedule) (*Schedule, error) 
 	}
 	// OutputTarget can be set to nil to clear it
 	existing.OutputTarget = updates.OutputTarget
+	existing.RunOnce = updates.RunOnce
 	existing.UpdatedAt = time.Now().UTC()
 
 	sf.Schedules[id] = existing
