@@ -4,11 +4,10 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -22,6 +21,12 @@ import (
 	"github.com/open-pact/openpact/internal/providers/slack"
 	"github.com/open-pact/openpact/internal/providers/telegram"
 	"github.com/open-pact/openpact/internal/scheduler"
+	"github.com/open-pact/openpact/internal/storage/calendars"
+	"github.com/open-pact/openpact/internal/storage/channels"
+	"github.com/open-pact/openpact/internal/storage/chatproviders"
+	"github.com/open-pact/openpact/internal/storage/kv"
+	"github.com/open-pact/openpact/internal/storage/schedules"
+	"github.com/open-pact/openpact/internal/storage/secrets"
 	"github.com/stack-bound/stackllm/agent"
 	"github.com/stack-bound/stackllm/conversation"
 	"github.com/stack-bound/stackllm/profile"
@@ -37,7 +42,7 @@ type Orchestrator struct {
 	mcpServer     *mcp.Server
 	stack         *engine.Stack
 	scriptStore   *admin.ScriptStore // Script approval store (optional)
-	providerStore *admin.ProviderStore
+	providerStore *chatproviders.Store
 	scheduler     *scheduler.Scheduler
 
 	// Dynamic provider management
@@ -46,8 +51,9 @@ type Orchestrator struct {
 	providerStatus map[string]admin.ProviderStatusInfo
 
 	// Per-channel session tracking: "provider:channelID" -> stackllm session UUID
-	channelSessions map[string]string
-	sessionMu       sync.RWMutex
+	channelSessions     map[string]string
+	sessionMu           sync.RWMutex
+	channelSessionStore *channels.SessionStore
 
 	// Per-session mutex, so concurrent messages to the same channel serialize
 	// through the agent loop. Acquired in handleChatMessage.
@@ -55,8 +61,9 @@ type Orchestrator struct {
 	sessionLocks   map[string]*sync.Mutex
 
 	// Per-channel detail mode: "provider:channelID" -> mode (simple/thinking/tools/full)
-	channelModes map[string]string
-	modeMu       sync.RWMutex
+	channelModes     map[string]string
+	modeMu           sync.RWMutex
+	channelModeStore *channels.ModeStore
 
 	// State
 	mu      sync.RWMutex
@@ -64,31 +71,33 @@ type Orchestrator struct {
 	cancel  context.CancelFunc
 }
 
-// channelSessionsFile is the JSON file that persists per-channel session mappings.
-type channelSessionsFile struct {
-	Sessions map[string]string `json:"sessions"`
-}
-
-// channelModesFile is the JSON file that persists per-channel detail mode settings.
-type channelModesFile struct {
-	Modes map[string]string `json:"modes"`
-}
-
 // sessionKey builds the key for per-channel session lookup.
 func sessionKey(provider, channelID string) string {
 	return provider + ":" + channelID
 }
 
-// New creates a new Orchestrator with the given config
-func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator, error) {
+// New creates a new Orchestrator with the given config. db is the
+// shared *sql.DB that backs every OpenPact store plus stackllm's
+// session tables; the caller opens it (cmd/openpact/main) so the
+// orchestrator, admin server, and engine.Stack all point at the same
+// connection.
+func New(cfg *config.Config, db *sql.DB, secretStore *secrets.Store, providerStore *chatproviders.Store) (*Orchestrator, error) {
+	if db == nil {
+		return nil, fmt.Errorf("orchestrator: db is required")
+	}
+	if secretStore == nil {
+		return nil, fmt.Errorf("orchestrator: secretStore is required")
+	}
 	o := &Orchestrator{
-		cfg:             cfg,
-		providerStore:   providerStore,
-		channelSessions: make(map[string]string),
-		channelModes:    make(map[string]string),
-		sessionLocks:    make(map[string]*sync.Mutex),
-		providers:       make(map[string]chat.Provider),
-		providerStatus:  make(map[string]admin.ProviderStatusInfo),
+		cfg:                 cfg,
+		providerStore:       providerStore,
+		channelSessions:     make(map[string]string),
+		channelSessionStore: channels.NewSessionStore(db),
+		channelModes:        make(map[string]string),
+		channelModeStore:    channels.NewModeStore(db),
+		sessionLocks:        make(map[string]*sync.Mutex),
+		providers:           make(map[string]chat.Provider),
+		providerStatus:      make(map[string]admin.ProviderStatusInfo),
 	}
 
 	// Initialize context loader (reads from AI-accessible data dir)
@@ -97,35 +106,9 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	// Seed workspace with template context files if they don't exist
 	seedContextTemplates(cfg.Workspace.AIDataDir())
 
-	// Seed provider store from YAML config (one-time migration)
-	if providerStore != nil {
-		seedProviders := make(map[string]admin.ProviderConfig)
-		if cfg.Discord.Enabled {
-			seedProviders["discord"] = admin.ProviderConfig{
-				Enabled:      true,
-				AllowedUsers: cfg.Discord.AllowedUsers,
-				AllowedChans: cfg.Discord.AllowedChans,
-			}
-		}
-		if cfg.Telegram.Enabled {
-			seedProviders["telegram"] = admin.ProviderConfig{
-				Enabled:      true,
-				AllowedUsers: cfg.Telegram.AllowedUsers,
-			}
-		}
-		if cfg.Slack.Enabled {
-			seedProviders["slack"] = admin.ProviderConfig{
-				Enabled:      true,
-				AllowedUsers: cfg.Slack.AllowedUsers,
-				AllowedChans: cfg.Slack.AllowedChans,
-			}
-		}
-		if len(seedProviders) > 0 {
-			if err := providerStore.SeedFromConfig(seedProviders); err != nil {
-				log.Printf("Warning: failed to seed provider store: %v", err)
-			}
-		}
-	}
+	// Provider config used to seed from YAML — now authoritative in the
+	// DB per the config-migration plan. Operators enable providers via
+	// the admin UI; there's no YAML fallback any more.
 
 	// Initialize MCP server (used only for registering tool handlers — the
 	// stackllm engine adapter copies each tool into a native Go registry).
@@ -135,36 +118,46 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	regCfg := mcp.RegistrationConfig{
 		WorkspacePath: cfg.Workspace.Path,
 		AIDataDir:     cfg.Workspace.AIDataDir(),
+		DB:            db,
+		Secrets:       secretStore,
 		ReloadContext: o.ReloadContext,
 		Chat:          o,
 		Models:        o,
 		Allowlist:     cfg.Admin.Allowlist,
 	}
 
-	// Calendar config
-	if len(cfg.Calendars) > 0 {
-		regCfg.Calendars = make([]mcp.CalendarConfig, len(cfg.Calendars))
-		for i, c := range cfg.Calendars {
-			regCfg.Calendars[i] = mcp.CalendarConfig{Name: c.Name, URL: c.URL}
+	// Calendar / vault / GitHub config — all live in the shared DB now.
+	// YAML values for these are ignored (removed in the same PR).
+	ctx0 := context.Background()
+
+	if feeds, err := calendars.NewStore(db).List(ctx0); err == nil && len(feeds) > 0 {
+		regCfg.Calendars = make([]mcp.CalendarConfig, len(feeds))
+		for i, f := range feeds {
+			regCfg.Calendars[i] = mcp.CalendarConfig{Name: f.Name, URL: f.URL}
 		}
 	}
 
-	// Vault config
-	if cfg.Vault.Path != "" {
-		regCfg.Vault = &mcp.VaultConfig{
-			Path:     cfg.Vault.Path,
-			GitRepo:  cfg.Vault.GitRepo,
-			AutoSync: cfg.Vault.AutoSync,
+	integrations, err := kv.LoadIntegrationScalars(ctx0, db)
+	if err == nil {
+		if integrations.Vault.Path != "" {
+			regCfg.Vault = &mcp.VaultConfig{
+				Path:     integrations.Vault.Path,
+				GitRepo:  integrations.Vault.GitRepo,
+				AutoSync: integrations.Vault.AutoSync,
+			}
 		}
-	}
-
-	// GitHub config
-	if cfg.GitHub.Enabled {
-		token := os.Getenv("GITHUB_TOKEN")
-		if token != "" {
-			regCfg.GitHub = &mcp.GitHubConfig{Token: token}
-		} else {
-			log.Println("GitHub enabled but GITHUB_TOKEN not set, skipping")
+		if integrations.GitHub.Enabled {
+			// Token lives in op_secrets under a fixed key; env var is a
+			// fallback for ops who prefer injecting credentials that way.
+			token, err := secretStore.Get(ctx0, "GITHUB_TOKEN")
+			if err != nil {
+				token = os.Getenv("GITHUB_TOKEN")
+			}
+			if token != "" {
+				regCfg.GitHub = &mcp.GitHubConfig{Token: token}
+			} else {
+				log.Println("GitHub enabled but no token (set via admin UI or GITHUB_TOKEN env var)")
+			}
 		}
 	}
 
@@ -177,19 +170,18 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	}
 
 	// Initialize scheduler
-	scheduleStore := admin.NewScheduleStore(cfg.Workspace.DataDir())
+	scheduleStore := schedules.NewStore(db)
 	schedCfg := scheduler.Config{
 		ScriptsDir:     cfg.Workspace.ScriptsDir(),
 		MaxExecutionMs: cfg.Starlark.MaxExecutionMs,
 	}
 	// Load secrets for scheduler's script execution
-	secretStore := admin.NewSecretStore(cfg.Workspace.DataDir())
-	if secrets, err := secretStore.All(); err == nil {
-		schedCfg.Secrets = secrets
+	if secretMap, err := secretStore.All(context.Background()); err == nil {
+		schedCfg.Secrets = secretMap
 	}
 	// Script approval store
 	if cfg.Admin.Enabled {
-		scriptStore, err := admin.NewScriptStore(cfg.Workspace.ScriptsDir(), cfg.Workspace.DataDir(), cfg.Admin.Allowlist)
+		scriptStore, err := admin.NewScriptStore(db, cfg.Workspace.ScriptsDir(), cfg.Admin.Allowlist)
 		if err == nil {
 			schedCfg.ScriptStore = scriptStore
 		}
@@ -203,7 +195,7 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 
 	// Store script store reference for admin API
 	if regCfg.Script != nil && cfg.Admin.Enabled {
-		scriptStore, err := admin.NewScriptStore(cfg.Workspace.ScriptsDir(), cfg.Workspace.DataDir(), cfg.Admin.Allowlist)
+		scriptStore, err := admin.NewScriptStore(db, cfg.Workspace.ScriptsDir(), cfg.Admin.Allowlist)
 		if err != nil {
 			log.Printf("Warning: failed to create script store for admin: %v", err)
 		} else {
@@ -212,11 +204,12 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	}
 
 	// Build the stackllm stack — this copies every MCP tool into a native
-	// Go registry, opens the SQLite session store, and wires the
-	// web.ManagedHandler that the admin server will mount at /api/engine/.
+	// Go registry, attaches the session store to the shared DB, and
+	// wires the web.ManagedHandler that the admin server mounts at
+	// /api/engine/.
 	stack, err := engine.New(engine.Config{
 		WorkspacePath: cfg.Workspace.Path,
-		DBPath:        cfg.Engine.DBPath,
+		DB:            db,
 		Tools:         o.mcpServer,
 	})
 	if err != nil {
@@ -253,7 +246,7 @@ func (o *Orchestrator) StartProvider(name string) error {
 	o.providerStatus[name] = admin.ProviderStatusInfo{State: "starting"}
 	o.providerMu.Unlock()
 
-	cfg, err := o.providerStore.Get(name)
+	cfg, err := o.providerStore.Get(context.Background(), name)
 	if err != nil {
 		o.setProviderError(name, fmt.Sprintf("config not found: %v", err))
 		return fmt.Errorf("failed to get config for %s: %w", name, err)
@@ -376,10 +369,10 @@ func (o *Orchestrator) setProviderError(name, errMsg string) {
 	o.providerMu.Unlock()
 }
 
-func (o *Orchestrator) createProvider(name string, cfg admin.ProviderConfig) (chat.Provider, error) {
+func (o *Orchestrator) createProvider(name string, cfg chatproviders.Config) (chat.Provider, error) {
 	switch name {
 	case "discord":
-		token := o.providerStore.ResolveToken("discord", "token")
+		token := o.providerStore.ResolveToken(context.Background(), "discord", "token")
 		if token == "" {
 			return nil, fmt.Errorf("discord token not available (set via UI or DISCORD_TOKEN env var)")
 		}
@@ -389,7 +382,7 @@ func (o *Orchestrator) createProvider(name string, cfg admin.ProviderConfig) (ch
 			AllowedChans: cfg.AllowedChans,
 		})
 	case "telegram":
-		token := o.providerStore.ResolveToken("telegram", "token")
+		token := o.providerStore.ResolveToken(context.Background(), "telegram", "token")
 		if token == "" {
 			return nil, fmt.Errorf("telegram token not available (set via UI or TELEGRAM_BOT_TOKEN env var)")
 		}
@@ -398,8 +391,8 @@ func (o *Orchestrator) createProvider(name string, cfg admin.ProviderConfig) (ch
 			AllowedUsers: cfg.AllowedUsers,
 		})
 	case "slack":
-		botToken := o.providerStore.ResolveToken("slack", "bot_token")
-		appToken := o.providerStore.ResolveToken("slack", "app_token")
+		botToken := o.providerStore.ResolveToken(context.Background(), "slack", "bot_token")
+		appToken := o.providerStore.ResolveToken(context.Background(), "slack", "app_token")
 		if botToken == "" || appToken == "" {
 			return nil, fmt.Errorf("slack tokens not available (set via UI or SLACK_BOT_TOKEN/SLACK_APP_TOKEN env vars)")
 		}
@@ -458,7 +451,7 @@ func (o *Orchestrator) startEnabledProviders() {
 		return
 	}
 
-	configs, err := o.providerStore.List()
+	configs, err := o.providerStore.List(context.Background())
 	if err != nil {
 		log.Printf("Warning: failed to list providers: %v", err)
 		return
@@ -859,61 +852,26 @@ func (o *Orchestrator) SetChannelSession(provider, channelID, sessionID string) 
 	o.sessionMu.Lock()
 	o.channelSessions[sessionKey(provider, channelID)] = sessionID
 	o.sessionMu.Unlock()
-	o.saveChannelSessions()
+	if err := o.channelSessionStore.Set(context.Background(), provider, channelID, sessionID); err != nil {
+		log.Printf("Warning: failed to persist channel session %s:%s: %v", provider, channelID, err)
+	}
 }
 
-// loadChannelSessions reads per-channel session mappings from disk.
+// loadChannelSessions hydrates the in-memory session cache from the
+// op_channel_sessions table. Silent on errors — restart falls back
+// to empty cache, conversations just start fresh on that channel.
 func (o *Orchestrator) loadChannelSessions() {
-	path := o.channelSessionsPath()
-	data, err := os.ReadFile(path)
+	all, err := o.channelSessionStore.All(context.Background())
 	if err != nil {
+		log.Printf("Warning: failed to load channel sessions: %v", err)
 		return
 	}
-
-	var f channelSessionsFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return
-	}
-
 	o.sessionMu.Lock()
-	for k, v := range f.Sessions {
+	for k, v := range all {
 		o.channelSessions[k] = v
 	}
 	o.sessionMu.Unlock()
-	log.Printf("Restored %d channel sessions", len(f.Sessions))
-}
-
-// saveChannelSessions persists per-channel session mappings to disk.
-func (o *Orchestrator) saveChannelSessions() {
-	path := o.channelSessionsPath()
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("Warning: failed to create data dir for channel sessions: %v", err)
-		return
-	}
-
-	o.sessionMu.RLock()
-	sessions := make(map[string]string, len(o.channelSessions))
-	for k, v := range o.channelSessions {
-		sessions[k] = v
-	}
-	o.sessionMu.RUnlock()
-
-	data, err := json.Marshal(channelSessionsFile{Sessions: sessions})
-	if err != nil {
-		log.Printf("Warning: failed to marshal channel sessions: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		log.Printf("Warning: failed to save channel sessions: %v", err)
-	}
-}
-
-// channelSessionsPath returns the path to the channel sessions file.
-func (o *Orchestrator) channelSessionsPath() string {
-	return filepath.Join(o.cfg.Workspace.DataDir(), "channel_sessions.json")
+	log.Printf("Restored %d channel sessions", len(all))
 }
 
 // GetChannelMode returns the detail mode for a provider:channel pair.
@@ -933,7 +891,9 @@ func (o *Orchestrator) SetChannelMode(provider, channelID, mode string) {
 	o.modeMu.Lock()
 	o.channelModes[sessionKey(provider, channelID)] = mode
 	o.modeMu.Unlock()
-	o.saveChannelModes()
+	if err := o.channelModeStore.Set(context.Background(), provider, channelID, mode); err != nil {
+		log.Printf("Warning: failed to persist channel mode %s:%s: %v", provider, channelID, err)
+	}
 }
 
 // ListChannelModes returns all channel mode settings.
@@ -947,58 +907,22 @@ func (o *Orchestrator) ListChannelModes() map[string]string {
 	return result
 }
 
-// loadChannelModes reads per-channel mode settings from disk.
+// loadChannelModes hydrates the in-memory mode cache from the
+// op_channel_modes table. Silent on errors — restart falls back to
+// empty cache; GetChannelMode returns the simple-mode default for
+// any channel without a row.
 func (o *Orchestrator) loadChannelModes() {
-	path := o.channelModesPath()
-	data, err := os.ReadFile(path)
+	all, err := o.channelModeStore.All(context.Background())
 	if err != nil {
+		log.Printf("Warning: failed to load channel modes: %v", err)
 		return
 	}
-
-	var f channelModesFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return
-	}
-
 	o.modeMu.Lock()
-	for k, v := range f.Modes {
+	for k, v := range all {
 		o.channelModes[k] = v
 	}
 	o.modeMu.Unlock()
-	log.Printf("Restored %d channel modes", len(f.Modes))
-}
-
-// saveChannelModes persists per-channel mode settings to disk.
-func (o *Orchestrator) saveChannelModes() {
-	path := o.channelModesPath()
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("Warning: failed to create data dir for channel modes: %v", err)
-		return
-	}
-
-	o.modeMu.RLock()
-	modes := make(map[string]string, len(o.channelModes))
-	for k, v := range o.channelModes {
-		modes[k] = v
-	}
-	o.modeMu.RUnlock()
-
-	data, err := json.Marshal(channelModesFile{Modes: modes})
-	if err != nil {
-		log.Printf("Warning: failed to marshal channel modes: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		log.Printf("Warning: failed to save channel modes: %v", err)
-	}
-}
-
-// channelModesPath returns the path to the channel modes file.
-func (o *Orchestrator) channelModesPath() string {
-	return filepath.Join(o.cfg.Workspace.DataDir(), "channel_modes.json")
+	log.Printf("Restored %d channel modes", len(all))
 }
 
 // ContextUsage is the data surfaced by the /context chat command.
@@ -1192,17 +1116,17 @@ func (o *Orchestrator) RunAgent(ctx context.Context, prompt string) (string, str
 
 // List returns all schedules from the store.
 func (o *Orchestrator) List() ([]*admin.Schedule, error) {
-	return o.scheduler.Store().List()
+	return o.scheduler.Store().List(context.Background())
 }
 
 // Get returns a schedule by ID.
 func (o *Orchestrator) Get(id string) (*admin.Schedule, error) {
-	return o.scheduler.Store().Get(id)
+	return o.scheduler.Store().Get(context.Background(), id)
 }
 
 // Create creates a new schedule and reloads the scheduler.
 func (o *Orchestrator) Create(sched *admin.Schedule) (*admin.Schedule, error) {
-	created, err := o.scheduler.Store().Create(sched)
+	created, err := o.scheduler.Store().Create(context.Background(), sched)
 	if err != nil {
 		return nil, err
 	}
@@ -1212,7 +1136,7 @@ func (o *Orchestrator) Create(sched *admin.Schedule) (*admin.Schedule, error) {
 
 // Update updates a schedule and reloads the scheduler.
 func (o *Orchestrator) Update(id string, updates *admin.Schedule) (*admin.Schedule, error) {
-	updated, err := o.scheduler.Store().Update(id, updates)
+	updated, err := o.scheduler.Store().Update(context.Background(), id, updates)
 	if err != nil {
 		return nil, err
 	}
@@ -1222,7 +1146,7 @@ func (o *Orchestrator) Update(id string, updates *admin.Schedule) (*admin.Schedu
 
 // Delete deletes a schedule and reloads the scheduler.
 func (o *Orchestrator) Delete(id string) error {
-	if err := o.scheduler.Store().Delete(id); err != nil {
+	if err := o.scheduler.Store().Delete(context.Background(), id); err != nil {
 		return err
 	}
 	o.scheduler.Reload()
@@ -1231,7 +1155,7 @@ func (o *Orchestrator) Delete(id string) error {
 
 // SetEnabled enables or disables a schedule and reloads.
 func (o *Orchestrator) SetEnabled(id string, enabled bool) error {
-	if err := o.scheduler.Store().SetEnabled(id, enabled); err != nil {
+	if err := o.scheduler.Store().SetEnabled(context.Background(), id, enabled); err != nil {
 		return err
 	}
 	o.scheduler.Reload()

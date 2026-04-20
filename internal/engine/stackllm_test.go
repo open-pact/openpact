@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/open-pact/openpact/internal/mcp"
+	"github.com/open-pact/openpact/internal/storage"
 )
 
 // TestNew_BuildsAllComponents verifies that New() wires all the expected
@@ -35,8 +36,10 @@ func TestNew_BuildsAllComponents(t *testing.T) {
 		},
 	})
 
+	db := storage.NewTestDB(t)
 	stack, err := New(Config{
 		WorkspacePath: workspace,
+		DB:            db,
 		Tools:         mcpSrv,
 	})
 	if err != nil {
@@ -81,9 +84,17 @@ func TestNew_BuildsAllComponents(t *testing.T) {
 }
 
 func TestNew_RejectsEmptyWorkspace(t *testing.T) {
-	_, err := New(Config{})
+	db := storage.NewTestDB(t)
+	_, err := New(Config{DB: db})
 	if err == nil {
 		t.Fatal("expected error for empty WorkspacePath")
+	}
+}
+
+func TestNew_RejectsNilDB(t *testing.T) {
+	_, err := New(Config{WorkspacePath: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected error for nil DB")
 	}
 }
 
@@ -92,7 +103,8 @@ func TestNew_RejectsEmptyWorkspace(t *testing.T) {
 // registry is simply empty.
 func TestNew_NilToolsServer(t *testing.T) {
 	workspace := t.TempDir()
-	stack, err := New(Config{WorkspacePath: workspace})
+	db := storage.NewTestDB(t)
+	stack, err := New(Config{WorkspacePath: workspace, DB: db})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -250,7 +262,7 @@ func TestRegisterMCPTools_AllRegistered(t *testing.T) {
 		})
 	}
 
-	stack, err := New(Config{WorkspacePath: t.TempDir(), Tools: srv})
+	stack, err := New(Config{WorkspacePath: t.TempDir(), DB: storage.NewTestDB(t), Tools: srv})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -271,7 +283,7 @@ func TestRegisterMCPTools_AllRegistered(t *testing.T) {
 // TestStack_HandlerMountsEndpoints smoke-tests that the web.ManagedHandler
 // is mounted and responds to GET /providers with a 200.
 func TestStack_HandlerMountsEndpoints(t *testing.T) {
-	stack, err := New(Config{WorkspacePath: t.TempDir()})
+	stack, err := New(Config{WorkspacePath: t.TempDir(), DB: storage.NewTestDB(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -289,7 +301,7 @@ func TestStack_HandlerMountsEndpoints(t *testing.T) {
 // TestStack_SystemPromptRoundTrip verifies Set/Get semantics for the
 // orchestrator's system prompt plumbing.
 func TestStack_SystemPromptRoundTrip(t *testing.T) {
-	stack, err := New(Config{WorkspacePath: t.TempDir()})
+	stack, err := New(Config{WorkspacePath: t.TempDir(), DB: storage.NewTestDB(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -308,7 +320,7 @@ func TestStack_SystemPromptRoundTrip(t *testing.T) {
 // TestStack_DefaultModel_NoneSet returns ok=false before any default is
 // persisted.
 func TestStack_DefaultModel_NoneSet(t *testing.T) {
-	stack, err := New(Config{WorkspacePath: t.TempDir()})
+	stack, err := New(Config{WorkspacePath: t.TempDir(), DB: storage.NewTestDB(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -329,8 +341,12 @@ func TestStack_DefaultModel_NoneSet(t *testing.T) {
 func TestNew_ReopenPreservesConfig(t *testing.T) {
 	workspace := t.TempDir()
 
-	// Open, seed the auth store, close.
-	stack, err := New(Config{WorkspacePath: workspace})
+	// Stackllm auth lives on disk (file path derived from WorkspacePath),
+	// so reopening the stack with a fresh DB still finds the persisted
+	// auth file. DB-backed state (session history) would vanish with a
+	// fresh in-memory DB, but that's not what this test covers.
+	db1 := storage.NewTestDB(t)
+	stack, err := New(Config{WorkspacePath: workspace, DB: db1})
 	if err != nil {
 		t.Fatalf("first New: %v", err)
 	}
@@ -340,8 +356,8 @@ func TestNew_ReopenPreservesConfig(t *testing.T) {
 	}
 	stack.Close()
 
-	// Reopen; the stored key should still be authenticated.
-	stack2, err := New(Config{WorkspacePath: workspace})
+	db2 := storage.NewTestDB(t)
+	stack2, err := New(Config{WorkspacePath: workspace, DB: db2})
 	if err != nil {
 		t.Fatalf("second New: %v", err)
 	}
@@ -378,7 +394,7 @@ func TestStack_CloseNil(t *testing.T) {
 
 // Ensure that repeated Close calls don't blow up.
 func TestStack_CloseTwice(t *testing.T) {
-	stack, err := New(Config{WorkspacePath: t.TempDir()})
+	stack, err := New(Config{WorkspacePath: t.TempDir(), DB: storage.NewTestDB(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

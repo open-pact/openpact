@@ -1,16 +1,21 @@
 package mcp
 
 import (
+	"context"
+	"database/sql"
 	"log"
 
 	"github.com/open-pact/openpact/internal/admin"
 	"github.com/open-pact/openpact/internal/starlark"
+	"github.com/open-pact/openpact/internal/storage/secrets"
 )
 
 // RegistrationConfig holds the configuration needed to register all MCP tools.
 type RegistrationConfig struct {
 	WorkspacePath string
 	AIDataDir     string
+	DB            *sql.DB // shared database handle (approvals + secrets live here now)
+	Secrets       *secrets.Store // pre-constructed encrypted secrets store
 	ReloadContext ContextReloader   // nil for standalone mode (no context reload)
 	Calendars     []CalendarConfig
 	Vault         *VaultConfig      // nil if not configured
@@ -35,9 +40,6 @@ type ScriptRegistrationConfig struct {
 func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 	// Workspace + memory tools (always registered, scoped to AI data dir)
 	RegisterDefaultTools(srv, cfg.AIDataDir, cfg.ReloadContext)
-
-	// Derive system data dir from workspace path for secrets/approvals
-	dataDir := cfg.WorkspacePath + "/secure/data"
 
 	// Calendar tools
 	if len(cfg.Calendars) > 0 {
@@ -66,20 +68,26 @@ func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 			ScriptStore:    cfg.Script.ScriptStore,
 		}
 
-		// Load secrets from store if secrets not provided
-		if len(scriptCfg.Secrets) == 0 {
-			secretStore := admin.NewSecretStore(dataDir)
-			secrets, err := secretStore.All()
+		// Load secrets from store if secrets not provided. The caller
+		// is responsible for constructing the cipher-initialised
+		// secrets store and passing it via cfg.Secrets (or pre-loading
+		// the plaintext map into scriptCfg.Secrets for legacy paths).
+		if len(scriptCfg.Secrets) == 0 && cfg.Secrets != nil {
+			loaded, err := cfg.Secrets.All(context.Background())
 			if err != nil {
 				log.Printf("Warning: failed to load secrets: %v", err)
-				secrets = map[string]string{}
+				loaded = map[string]string{}
 			}
-			scriptCfg.Secrets = secrets
+			scriptCfg.Secrets = loaded
 		}
 
-		// Initialize script store for approval checking
-		if cfg.Script.ScriptStore == nil {
-			scriptStore, err := admin.NewScriptStore(cfg.Script.ScriptsDir, dataDir, cfg.Allowlist)
+		// Initialize script store for approval checking. Requires a DB
+		// — callers running in environments without SQLite access
+		// (e.g. a future mcp-server-only binary that doesn't own the
+		// workspace) should construct the ScriptStore themselves and
+		// pass it in.
+		if cfg.Script.ScriptStore == nil && cfg.DB != nil {
+			scriptStore, err := admin.NewScriptStore(cfg.DB, cfg.Script.ScriptsDir, cfg.Allowlist)
 			if err != nil {
 				log.Printf("Warning: failed to create script store: %v", err)
 			} else {
@@ -109,12 +117,16 @@ func RegisterAllTools(srv *Server, cfg RegistrationConfig) {
 
 // RegisterAllToolsFromEnv creates a RegistrationConfig from the standalone MCP server's
 // environment variables and registers all tools. Used by cmd/mcp-server.
-func RegisterAllToolsFromEnv(srv *Server, workspacePath, features string) {
+// db is the shared SQLite handle — required for script approval
+// checking and (after the secrets migration) secret decryption.
+func RegisterAllToolsFromEnv(srv *Server, workspacePath, features string, db *sql.DB, secretStore *secrets.Store) {
 	aiDataDir := workspacePath + "/ai-data"
 
 	cfg := RegistrationConfig{
 		WorkspacePath: workspacePath,
 		AIDataDir:     aiDataDir,
+		DB:            db,
+		Secrets:       secretStore,
 	}
 
 	// In standalone mode, context reload is not available (the orchestrator handles it)

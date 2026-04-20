@@ -2,10 +2,12 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/open-pact/openpact/internal/chat"
+	"github.com/open-pact/openpact/internal/storage/chatproviders"
 )
 
 // ProviderManagerAPI is the interface the orchestrator implements for provider lifecycle management.
@@ -31,14 +33,16 @@ type ProviderStatusInfo struct {
 }
 
 // ProviderHandlers handles HTTP requests for provider management.
+// The actual persistence lives in internal/storage/chatproviders now;
+// this struct is a thin HTTP adapter on top.
 type ProviderHandlers struct {
-	store   *ProviderStore
+	store   *chatproviders.Store
 	manager ProviderManagerAPI
 	modes   ChannelModeAPI
 }
 
 // NewProviderHandlers creates new provider handlers.
-func NewProviderHandlers(store *ProviderStore) *ProviderHandlers {
+func NewProviderHandlers(store *chatproviders.Store) *ProviderHandlers {
 	return &ProviderHandlers{store: store}
 }
 
@@ -54,15 +58,16 @@ func (h *ProviderHandlers) SetModeAPI(api ChannelModeAPI) {
 
 // providerResponse is the API response for a single provider.
 type providerResponse struct {
-	Name         string                       `json:"name"`
-	Enabled      bool                         `json:"enabled"`
-	AllowedUsers []string                     `json:"allowed_users"`
-	AllowedChans []string                     `json:"allowed_chans"`
-	Status       *ProviderStatusInfo          `json:"status,omitempty"`
-	Tokens       map[string]ProviderTokenInfo `json:"tokens"`
+	Name         string                             `json:"name"`
+	Enabled      bool                               `json:"enabled"`
+	AllowedUsers []string                           `json:"allowed_users"`
+	AllowedChans []string                           `json:"allowed_chans"`
+	Status       *ProviderStatusInfo                `json:"status,omitempty"`
+	Tokens       map[string]chatproviders.TokenInfo `json:"tokens"`
 }
 
 var allProviderNames = []string{"discord", "telegram", "slack"}
+var validProviderNamesSet = map[string]bool{"discord": true, "telegram": true, "slack": true}
 
 // ListProviders handles GET /api/providers.
 func (h *ProviderHandlers) ListProviders(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +83,7 @@ func (h *ProviderHandlers) ListProviders(w http.ResponseWriter, r *http.Request)
 
 	providers := make([]providerResponse, 0, 3)
 	for _, name := range allProviderNames {
-		providers = append(providers, h.buildProviderResponse(name, statuses))
+		providers = append(providers, h.buildProviderResponse(r, name, statuses))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"providers": providers})
@@ -87,7 +92,7 @@ func (h *ProviderHandlers) ListProviders(w http.ResponseWriter, r *http.Request)
 // HandleProviderByName handles /api/providers/:name.
 func (h *ProviderHandlers) HandleProviderByName(w http.ResponseWriter, r *http.Request) {
 	name := extractProviderName(r.URL.Path)
-	if !validProviderNames[name] {
+	if !validProviderNamesSet[name] {
 		http.Error(w, `{"error":"invalid provider name"}`, http.StatusBadRequest)
 		return
 	}
@@ -156,7 +161,7 @@ func (h *ProviderHandlers) GetProvider(w http.ResponseWriter, r *http.Request, n
 	if h.manager != nil {
 		statuses = h.manager.ListProviderStatuses()
 	}
-	writeJSON(w, http.StatusOK, h.buildProviderResponse(name, statuses))
+	writeJSON(w, http.StatusOK, h.buildProviderResponse(r, name, statuses))
 }
 
 // UpdateProvider handles PUT /api/providers/:name.
@@ -172,9 +177,9 @@ func (h *ProviderHandlers) UpdateProvider(w http.ResponseWriter, r *http.Request
 	}
 
 	// Get existing config or create default
-	cfg, err := h.store.Get(name)
-	if err == ErrProviderNotFound {
-		cfg = ProviderConfig{Name: name}
+	cfg, err := h.store.Get(r.Context(), name)
+	if errors.Is(err, chatproviders.ErrProviderNotFound) {
+		cfg = chatproviders.Config{Name: name}
 	} else if err != nil {
 		http.Error(w, `{"error":"failed to load config"}`, http.StatusInternalServerError)
 		return
@@ -190,10 +195,10 @@ func (h *ProviderHandlers) UpdateProvider(w http.ResponseWriter, r *http.Request
 		cfg.AllowedChans = req.AllowedChans
 	}
 
-	// Preserve existing tokens — Set() with nil Tokens preserves them
+	// Preserve existing tokens — Set() with nil Tokens preserves them.
 	cfg.Tokens = nil
 
-	if err := h.store.Set(name, cfg); err != nil {
+	if err := h.store.Set(r.Context(), name, cfg); err != nil {
 		http.Error(w, `{"error":"failed to save config"}`, http.StatusInternalServerError)
 		return
 	}
@@ -216,7 +221,7 @@ func (h *ProviderHandlers) SetTokens(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 
-	if err := h.store.SetTokens(name, req.Tokens); err != nil {
+	if err := h.store.SetTokens(r.Context(), name, req.Tokens); err != nil {
 		http.Error(w, `{"error":"failed to save tokens"}`, http.StatusInternalServerError)
 		return
 	}
@@ -319,15 +324,15 @@ func (h *ProviderHandlers) SetChannelMode(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "mode": req.Mode})
 }
 
-func (h *ProviderHandlers) buildProviderResponse(name string, statuses map[string]ProviderStatusInfo) providerResponse {
+func (h *ProviderHandlers) buildProviderResponse(r *http.Request, name string, statuses map[string]ProviderStatusInfo) providerResponse {
 	resp := providerResponse{
 		Name:         name,
 		AllowedUsers: []string{},
 		AllowedChans: []string{},
-		Tokens:       make(map[string]ProviderTokenInfo),
+		Tokens:       make(map[string]chatproviders.TokenInfo),
 	}
 
-	cfg, err := h.store.Get(name)
+	cfg, err := h.store.Get(r.Context(), name)
 	if err == nil {
 		resp.Enabled = cfg.Enabled
 		if cfg.AllowedUsers != nil {
@@ -338,9 +343,9 @@ func (h *ProviderHandlers) buildProviderResponse(name string, statuses map[strin
 		}
 	}
 
-	// Add token info for each required key
-	for _, key := range RequiredTokenKeys(name) {
-		resp.Tokens[key] = h.store.TokenInfo(name, key)
+	// Add token info for each required key.
+	for _, key := range chatproviders.RequiredTokenKeys(name) {
+		resp.Tokens[key] = h.store.TokenInfoFor(r.Context(), name, key)
 	}
 
 	// Add runtime status if available
@@ -361,5 +366,3 @@ func extractProviderName(path string) string {
 	}
 	return path
 }
-
-// writeJSON is defined in session_ai.go

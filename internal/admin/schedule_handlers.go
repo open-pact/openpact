@@ -38,7 +38,7 @@ func (h *ScheduleHandlers) ListSchedules(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	schedules, err := h.store.List()
+	schedules, err := h.store.List(r.Context())
 	if err != nil {
 		http.Error(w, `{"error":"internal","message":"Failed to list schedules"}`, http.StatusInternalServerError)
 		return
@@ -72,7 +72,7 @@ func (h *ScheduleHandlers) CreateSchedule(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	sched, err := h.store.Create(&req)
+	sched, err := h.store.Create(r.Context(), &req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":   "bad_request",
@@ -142,7 +142,7 @@ func (h *ScheduleHandlers) HandleScheduleByID(w http.ResponseWriter, r *http.Req
 
 // GetSchedule handles GET /api/schedules/:id.
 func (h *ScheduleHandlers) GetSchedule(w http.ResponseWriter, r *http.Request, id string) {
-	sched, err := h.store.Get(id)
+	sched, err := h.store.Get(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, ErrScheduleNotFound) {
 			http.Error(w, `{"error":"not_found","message":"Schedule not found"}`, http.StatusNotFound)
@@ -175,7 +175,7 @@ func (h *ScheduleHandlers) UpdateSchedule(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	sched, err := h.store.Update(id, &req)
+	sched, err := h.store.Update(r.Context(), id, &req)
 	if err != nil {
 		if errors.Is(err, ErrScheduleNotFound) {
 			http.Error(w, `{"error":"not_found","message":"Schedule not found"}`, http.StatusNotFound)
@@ -198,7 +198,7 @@ func (h *ScheduleHandlers) UpdateSchedule(w http.ResponseWriter, r *http.Request
 
 // DeleteSchedule handles DELETE /api/schedules/:id.
 func (h *ScheduleHandlers) DeleteSchedule(w http.ResponseWriter, r *http.Request, id string) {
-	err := h.store.Delete(id)
+	err := h.store.Delete(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, ErrScheduleNotFound) {
 			http.Error(w, `{"error":"not_found","message":"Schedule not found"}`, http.StatusNotFound)
@@ -218,7 +218,7 @@ func (h *ScheduleHandlers) DeleteSchedule(w http.ResponseWriter, r *http.Request
 
 // EnableSchedule handles POST /api/schedules/:id/enable.
 func (h *ScheduleHandlers) EnableSchedule(w http.ResponseWriter, r *http.Request, id string) {
-	err := h.store.SetEnabled(id, true)
+	err := h.store.SetEnabled(r.Context(), id, true)
 	if err != nil {
 		if errors.Is(err, ErrScheduleNotFound) {
 			http.Error(w, `{"error":"not_found","message":"Schedule not found"}`, http.StatusNotFound)
@@ -237,7 +237,7 @@ func (h *ScheduleHandlers) EnableSchedule(w http.ResponseWriter, r *http.Request
 
 // DisableSchedule handles POST /api/schedules/:id/disable.
 func (h *ScheduleHandlers) DisableSchedule(w http.ResponseWriter, r *http.Request, id string) {
-	err := h.store.SetEnabled(id, false)
+	err := h.store.SetEnabled(r.Context(), id, false)
 	if err != nil {
 		if errors.Is(err, ErrScheduleNotFound) {
 			http.Error(w, `{"error":"not_found","message":"Schedule not found"}`, http.StatusNotFound)

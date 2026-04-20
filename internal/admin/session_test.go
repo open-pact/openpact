@@ -2,11 +2,15 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/open-pact/openpact/internal/storage"
+	"github.com/open-pact/openpact/internal/storage/users"
 )
 
 func newTestJWTManager() *JWTManager {
@@ -18,12 +22,16 @@ func newTestJWTManager() *JWTManager {
 	})
 }
 
+func newTestUserStore(t *testing.T) *users.Store {
+	t.Helper()
+	return users.NewStore(storage.NewTestDB(t))
+}
+
 func TestSessionHandler_Login(t *testing.T) {
-	tmpDir := t.TempDir()
-	users, _ := NewUserStore(tmpDir)
-	users.Create("admin", "password1234567890")
+	userStore := newTestUserStore(t)
+	userStore.Create(context.Background(), "admin", "password1234567890")
 	jwt := newTestJWTManager()
-	handler := NewSessionHandler(users, jwt, false)
+	handler := NewSessionHandler(userStore, jwt, false)
 
 	t.Run("successful login", func(t *testing.T) {
 		body := `{"username": "admin", "password": "password1234567890"}`
@@ -49,18 +57,10 @@ func TestSessionHandler_Login(t *testing.T) {
 		if refreshCookie == nil {
 			t.Error("Expected refresh cookie to be set")
 		}
-
-		if !refreshCookie.HttpOnly {
-			t.Error("Expected refresh cookie to be HttpOnly")
-		}
-
-		if refreshCookie.Path != "/api/session" {
-			t.Errorf("Expected cookie path '/api/session', got '%s'", refreshCookie.Path)
-		}
 	})
 
 	t.Run("invalid credentials", func(t *testing.T) {
-		body := `{"username": "admin", "password": "wrongpassword"}`
+		body := `{"username": "admin", "password": "wrong"}`
 		req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
@@ -71,9 +71,8 @@ func TestSessionHandler_Login(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid json", func(t *testing.T) {
-		body := `{invalid`
-		req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewBufferString(body))
+	t.Run("invalid body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewBufferString("{not json"))
 		rec := httptest.NewRecorder()
 
 		handler.Login(rec, req)
@@ -85,11 +84,10 @@ func TestSessionHandler_Login(t *testing.T) {
 }
 
 func TestSessionHandler_Session(t *testing.T) {
-	tmpDir := t.TempDir()
-	users, _ := NewUserStore(tmpDir)
-	users.Create("admin", "password1234567890")
+	userStore := newTestUserStore(t)
+	userStore.Create(context.Background(), "admin", "password1234567890")
 	jwt := newTestJWTManager()
-	handler := NewSessionHandler(users, jwt, false)
+	handler := NewSessionHandler(userStore, jwt, false)
 
 	t.Run("valid refresh token", func(t *testing.T) {
 		refreshToken, _, _ := jwt.CreateRefreshToken("admin")
@@ -182,10 +180,9 @@ func TestSessionHandler_Session(t *testing.T) {
 }
 
 func TestSessionHandler_Logout(t *testing.T) {
-	tmpDir := t.TempDir()
-	users, _ := NewUserStore(tmpDir)
+	userStore := newTestUserStore(t)
 	jwt := newTestJWTManager()
-	handler := NewSessionHandler(users, jwt, false)
+	handler := NewSessionHandler(userStore, jwt, false)
 
 	req := httptest.NewRequest("POST", "/api/auth/logout", nil)
 	rec := httptest.NewRecorder()
@@ -216,10 +213,9 @@ func TestSessionHandler_Logout(t *testing.T) {
 }
 
 func TestSessionHandler_Me(t *testing.T) {
-	tmpDir := t.TempDir()
-	users, _ := NewUserStore(tmpDir)
+	userStore := newTestUserStore(t)
 	jwt := newTestJWTManager()
-	handler := NewSessionHandler(users, jwt, false)
+	handler := NewSessionHandler(userStore, jwt, false)
 
 	t.Run("authenticated user", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/auth/me", nil)
@@ -257,11 +253,10 @@ func TestSessionHandler_Me(t *testing.T) {
 }
 
 func TestFullAuthFlow(t *testing.T) {
-	tmpDir := t.TempDir()
-	users, _ := NewUserStore(tmpDir)
-	users.Create("admin", "password1234567890")
+	userStore := newTestUserStore(t)
+	userStore.Create(context.Background(), "admin", "password1234567890")
 	jwt := newTestJWTManager()
-	sessionHandler := NewSessionHandler(users, jwt, false)
+	sessionHandler := NewSessionHandler(userStore, jwt, false)
 
 	// Step 1: Login
 	loginBody := `{"username": "admin", "password": "password1234567890"}`

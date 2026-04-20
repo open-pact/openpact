@@ -112,5 +112,5 @@ func (s *Server) HandlerWithUI() (http.Handler, error) {
 	// match on specific API paths wins over the root catch-all.
 	mux.Handle("/", spaHandler)
 
-	return RequireSetupMiddleware(s.users, s.config.DataDir)(mux), nil
+	return RequireSetupMiddleware(s.users, s.config.DB)(mux), nil
 }

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/open-pact/openpact/internal/admin"
+	"github.com/open-pact/openpact/internal/storage"
+	"github.com/open-pact/openpact/internal/storage/schedules"
 )
 
 func setupTestScheduler(t *testing.T) (*Scheduler, string) {
@@ -16,6 +18,7 @@ func setupTestScheduler(t *testing.T) (*Scheduler, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	// Create scripts dir
 	scriptsDir := dir + "/scripts"
@@ -23,7 +26,7 @@ func setupTestScheduler(t *testing.T) (*Scheduler, string) {
 		t.Fatal(err)
 	}
 
-	store := admin.NewScheduleStore(dir)
+	store := schedules.NewStore(storage.NewTestDB(t))
 
 	cfg := Config{
 		ScriptsDir:     scriptsDir,
@@ -33,6 +36,10 @@ func setupTestScheduler(t *testing.T) (*Scheduler, string) {
 	s := New(store, cfg)
 	return s, dir
 }
+
+// Keep admin imported for the tests that reference admin.Schedule /
+// admin.OutputTarget directly.
+var _ = admin.Schedule{}
 
 func TestScheduler_StartStop(t *testing.T) {
 	s, dir := setupTestScheduler(t)
@@ -51,7 +58,7 @@ func TestScheduler_Reload(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// Create a schedule
-	s.store.Create(&admin.Schedule{
+	s.store.Create(context.Background(), &admin.Schedule{
 		Name:       "test-job",
 		CronExpr:   "0 0 * * *",
 		Type:       "script",
@@ -70,7 +77,7 @@ func TestScheduler_Reload(t *testing.T) {
 	}
 
 	// Add another schedule and reload
-	s.store.Create(&admin.Schedule{
+	s.store.Create(context.Background(), &admin.Schedule{
 		Name:       "test-job-2",
 		CronExpr:   "0 12 * * *",
 		Type:       "script",
@@ -91,7 +98,7 @@ func TestScheduler_DisabledNotRegistered(t *testing.T) {
 	s, dir := setupTestScheduler(t)
 	defer os.RemoveAll(dir)
 
-	s.store.Create(&admin.Schedule{
+	s.store.Create(context.Background(), &admin.Schedule{
 		Name:       "disabled-job",
 		CronExpr:   "0 0 * * *",
 		Type:       "script",
@@ -120,7 +127,7 @@ func TestScheduler_ExecuteScript(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sched, err := s.store.Create(&admin.Schedule{
+	sched, err := s.store.Create(context.Background(), &admin.Schedule{
 		Name:       "script-job",
 		CronExpr:   "0 0 * * *",
 		Type:       "script",
@@ -135,7 +142,7 @@ func TestScheduler_ExecuteScript(t *testing.T) {
 	s.executeJob(sched)
 
 	// Check last run status
-	got, _ := s.store.Get(sched.ID)
+	got, _ := s.store.Get(context.Background(), sched.ID)
 	if got.LastRunStatus != "success" {
 		t.Errorf("expected status 'success', got %q (error: %s)", got.LastRunStatus, got.LastRunError)
 	}
@@ -148,7 +155,7 @@ func TestScheduler_ExecuteScriptError(t *testing.T) {
 	s, dir := setupTestScheduler(t)
 	defer os.RemoveAll(dir)
 
-	sched, _ := s.store.Create(&admin.Schedule{
+	sched, _ := s.store.Create(context.Background(), &admin.Schedule{
 		Name:       "missing-script-job",
 		CronExpr:   "0 0 * * *",
 		Type:       "script",
@@ -158,7 +165,7 @@ func TestScheduler_ExecuteScriptError(t *testing.T) {
 
 	s.executeJob(sched)
 
-	got, _ := s.store.Get(sched.ID)
+	got, _ := s.store.Get(context.Background(), sched.ID)
 	if got.LastRunStatus != "error" {
 		t.Errorf("expected status 'error', got %q", got.LastRunStatus)
 	}
@@ -187,7 +194,7 @@ func TestScheduler_ExecuteAgent(t *testing.T) {
 	mock := &mockEngine{sessionID: "test-session", output: "agent response"}
 	s.SetEngineAPI(mock)
 
-	sched, _ := s.store.Create(&admin.Schedule{
+	sched, _ := s.store.Create(context.Background(), &admin.Schedule{
 		Name:     "agent-job",
 		CronExpr: "0 0 * * *",
 		Type:     "agent",
@@ -197,7 +204,7 @@ func TestScheduler_ExecuteAgent(t *testing.T) {
 
 	s.executeJob(sched)
 
-	got, _ := s.store.Get(sched.ID)
+	got, _ := s.store.Get(context.Background(), sched.ID)
 	if got.LastRunStatus != "success" {
 		t.Errorf("expected status 'success', got %q (error: %s)", got.LastRunStatus, got.LastRunError)
 	}
@@ -213,7 +220,7 @@ func TestScheduler_ExecuteAgentNoEngine(t *testing.T) {
 	s, dir := setupTestScheduler(t)
 	defer os.RemoveAll(dir)
 
-	sched, _ := s.store.Create(&admin.Schedule{
+	sched, _ := s.store.Create(context.Background(), &admin.Schedule{
 		Name:     "agent-job",
 		CronExpr: "0 0 * * *",
 		Type:     "agent",
@@ -223,7 +230,7 @@ func TestScheduler_ExecuteAgentNoEngine(t *testing.T) {
 
 	s.executeJob(sched)
 
-	got, _ := s.store.Get(sched.ID)
+	got, _ := s.store.Get(context.Background(), sched.ID)
 	if got.LastRunStatus != "error" {
 		t.Errorf("expected status 'error', got %q", got.LastRunStatus)
 	}
@@ -242,7 +249,7 @@ func TestScheduler_RunNow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sched, _ := s.store.Create(&admin.Schedule{
+	sched, _ := s.store.Create(context.Background(), &admin.Schedule{
 		Name:       "quick-job",
 		CronExpr:   "0 0 * * *",
 		Type:       "script",
@@ -257,7 +264,7 @@ func TestScheduler_RunNow(t *testing.T) {
 	// Wait briefly for goroutine to complete
 	time.Sleep(500 * time.Millisecond)
 
-	got, _ := s.store.Get(sched.ID)
+	got, _ := s.store.Get(context.Background(), sched.ID)
 	if got.LastRunStatus != "success" {
 		t.Errorf("expected status 'success', got %q (error: %s)", got.LastRunStatus, got.LastRunError)
 	}
@@ -290,7 +297,7 @@ func TestScheduler_OutputDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sched, _ := s.store.Create(&admin.Schedule{
+	sched, _ := s.store.Create(context.Background(), &admin.Schedule{
 		Name:       "output-job",
 		CronExpr:   "0 0 * * *",
 		Type:       "script",

@@ -101,7 +101,7 @@ func (s *Scheduler) SetChatAPI(api ChatAPI) {
 
 // Start loads all enabled schedules and starts the cron runner.
 func (s *Scheduler) Start(ctx context.Context) error {
-	schedules, err := s.store.List()
+	schedules, err := s.store.List(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to load schedules: %w", err)
 	}
@@ -138,7 +138,7 @@ func (s *Scheduler) Reload() error {
 	}
 
 	// Re-register enabled schedules
-	schedules, err := s.store.List()
+	schedules, err := s.store.List(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to load schedules: %w", err)
 	}
@@ -158,7 +158,7 @@ func (s *Scheduler) Reload() error {
 
 // RunNow triggers a schedule immediately in a background goroutine.
 func (s *Scheduler) RunNow(id string) error {
-	sched, err := s.store.Get(id)
+	sched, err := s.store.Get(context.Background(), id)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func (s *Scheduler) executeJob(sched *admin.Schedule) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[scheduler] Panic in job %q (%s): %v", sched.Name, sched.ID, r)
-			s.store.UpdateLastRun(sched.ID, "error", fmt.Sprintf("panic: %v", r), "")
+			s.store.UpdateLastRun(context.Background(), sched.ID, "error", fmt.Sprintf("panic: %v", r), "")
 		}
 	}()
 
@@ -229,15 +229,15 @@ func (s *Scheduler) executeJob(sched *admin.Schedule) {
 		log.Printf("[scheduler] Job %q (%s) completed successfully", sched.Name, sched.ID)
 	}
 
-	if err := s.store.UpdateLastRun(sched.ID, status, errMsg, output); err != nil {
+	if err := s.store.UpdateLastRun(context.Background(), sched.ID, status, errMsg, output); err != nil {
 		log.Printf("[scheduler] Failed to update last run for %q: %v", sched.Name, err)
 	}
 
 	// Auto-disable run-once schedules after execution.
 	// Re-read from store to get the current state (not the cached copy).
-	if current, err := s.store.Get(sched.ID); err == nil && current.RunOnce {
+	if current, err := s.store.Get(context.Background(), sched.ID); err == nil && current.RunOnce {
 		log.Printf("[scheduler] Run-once job %q (%s) completed, auto-disabling", sched.Name, sched.ID)
-		if err := s.store.SetEnabled(sched.ID, false); err != nil {
+		if err := s.store.SetEnabled(context.Background(), sched.ID, false); err != nil {
 			log.Printf("[scheduler] Failed to auto-disable run-once job %q: %v", sched.Name, err)
 		} else {
 			s.Reload()

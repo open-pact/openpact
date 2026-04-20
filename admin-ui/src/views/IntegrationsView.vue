@@ -29,6 +29,7 @@ const saving = ref(false)
 const settings = ref({
   calendars: [],
   vault: { path: '', git_repo: '', auto_sync: false },
+  github: { enabled: false },
 })
 
 // Add-calendar modal
@@ -44,6 +45,7 @@ async function load() {
       settings.value = {
         calendars: data.calendars || [],
         vault: data.vault || { path: '', git_repo: '', auto_sync: false },
+        github: data.github || { enabled: false },
       }
     } else {
       message.error('Failed to load integrations')
@@ -159,6 +161,17 @@ onMounted(load)
             </n-form-item>
             <n-form-item label="Auto pull/push on vault tool calls">
               <n-switch v-model:value="settings.vault.auto_sync" />
+            </n-form-item>
+          </n-form>
+        </div>
+      </Card>
+
+      <!-- GitHub -->
+      <Card title="GitHub" style="margin-top: 12px">
+        <div class="p-6">
+          <n-form>
+            <n-form-item label="Enable GitHub MCP tools" :feedback="'Store the token as a secret named GITHUB_TOKEN under Secrets.'">
+              <n-switch v-model:value="settings.github.enabled" />
             </n-form-item>
           </n-form>
         </div>

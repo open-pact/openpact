@@ -5,6 +5,24 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/open-pact/openpact/internal/storage/secrets"
+)
+
+// SecretStore is an alias for the DB-backed secrets store. Kept so
+// external callers that previously imported `admin.SecretStore`
+// still compile.
+type SecretStore = secrets.Store
+
+// SecretEntry is the re-exported list row shape.
+type SecretEntry = secrets.Entry
+
+// Re-exports so admin-package error switches keep working.
+var (
+	ErrSecretNotFound = secrets.ErrSecretNotFound
+	ErrSecretExists   = secrets.ErrSecretExists
+	ErrInvalidName    = secrets.ErrInvalidName
+	ErrInvalidValue   = secrets.ErrInvalidValue
 )
 
 // SecretHandlers handles secret management API endpoints.
@@ -33,7 +51,7 @@ type updateSecretRequest struct {
 
 // ListSecrets handles GET /api/secrets.
 func (h *SecretHandlers) ListSecrets(w http.ResponseWriter, r *http.Request) {
-	entries, err := h.store.List()
+	entries, err := h.store.List(r.Context())
 	if err != nil {
 		http.Error(w, `{"error":"internal","message":"Failed to list secrets"}`, http.StatusInternalServerError)
 		return
@@ -51,7 +69,7 @@ func (h *SecretHandlers) CreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.store.Create(req.Name, req.Value)
+	err := h.store.Create(r.Context(), req.Name, req.Value)
 	if err != nil {
 		if errors.Is(err, ErrSecretExists) {
 			http.Error(w, `{"error":"conflict","message":"Secret already exists"}`, http.StatusConflict)
@@ -92,7 +110,7 @@ func (h *SecretHandlers) UpdateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.store.Update(name, req.Value)
+	err := h.store.Update(r.Context(), name, req.Value)
 	if err != nil {
 		if errors.Is(err, ErrSecretNotFound) {
 			http.Error(w, `{"error":"not_found","message":"Secret not found"}`, http.StatusNotFound)
@@ -122,7 +140,7 @@ func (h *SecretHandlers) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.store.Delete(name)
+	err := h.store.Delete(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, ErrSecretNotFound) {
 			http.Error(w, `{"error":"not_found","message":"Secret not found"}`, http.StatusNotFound)

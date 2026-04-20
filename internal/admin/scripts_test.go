@@ -4,17 +4,25 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/open-pact/openpact/internal/storage"
 )
 
-func TestScriptStore_CreateAndGet(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, err := NewScriptStore(scriptsDir, dataDir, nil)
+// newScriptStore builds a ScriptStore backed by an in-memory SQLite DB
+// and a per-test scripts directory. Replaces the old (scriptsDir,
+// dataDir) constructor now that approval metadata lives in op_approvals.
+func newScriptStore(t *testing.T, allowlist []string) (*ScriptStore, string) {
+	t.Helper()
+	scriptsDir := filepath.Join(t.TempDir(), "scripts")
+	store, err := NewScriptStore(storage.NewTestDB(t), scriptsDir, allowlist)
 	if err != nil {
 		t.Fatalf("NewScriptStore failed: %v", err)
 	}
+	return store, scriptsDir
+}
+
+func TestScriptStore_CreateAndGet(t *testing.T) {
+	store, _ := newScriptStore(t, nil)
 
 	source := `# @description: Test script
 # @secrets: API_KEY
@@ -66,11 +74,7 @@ def main():
 }
 
 func TestScriptStore_List(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store, _ := newScriptStore(t, nil)
 
 	store.Create("script1.star", "def main(): pass", "admin")
 	store.Create("script2.star", "def main(): pass", "admin")
@@ -87,11 +91,7 @@ func TestScriptStore_List(t *testing.T) {
 }
 
 func TestScriptStore_Update(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store, _ := newScriptStore(t, nil)
 
 	store.Create("test.star", "def main(): return 1", "admin")
 
@@ -117,11 +117,7 @@ func TestScriptStore_Update(t *testing.T) {
 }
 
 func TestScriptStore_Delete(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store, _ := newScriptStore(t, nil)
 
 	store.Create("test.star", "def main(): pass", "admin")
 
@@ -143,11 +139,7 @@ func TestScriptStore_Delete(t *testing.T) {
 }
 
 func TestScriptStore_ApproveAndReject(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store, _ := newScriptStore(t, nil)
 
 	store.Create("test.star", "def main(): pass", "admin")
 
@@ -185,11 +177,7 @@ func TestScriptStore_ApproveAndReject(t *testing.T) {
 }
 
 func TestScriptStore_CanExecute(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store, _ := newScriptStore(t, nil)
 
 	store.Create("test.star", "def main(): pass", "admin")
 
@@ -219,12 +207,7 @@ func TestScriptStore_CanExecute(t *testing.T) {
 }
 
 func TestScriptStore_Allowlist(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	// Create store with allowlist
-	store, _ := NewScriptStore(scriptsDir, dataDir, []string{"trusted.star"})
+	store, scriptsDir := newScriptStore(t, []string{"trusted.star"})
 
 	// Create a script directly on disk (simulating pre-existing trusted script)
 	os.WriteFile(filepath.Join(scriptsDir, "trusted.star"), []byte("def main(): pass"), 0644)
@@ -251,17 +234,22 @@ func TestScriptStore_Allowlist(t *testing.T) {
 }
 
 func TestScriptStore_Persistence(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
+	// Both stores share one in-memory DB and one scripts dir so the
+	// second "instance" sees approvals the first instance persisted.
+	db := storage.NewTestDB(t)
+	scriptsDir := filepath.Join(t.TempDir(), "scripts")
 
-	// Create store and add scripts
-	store1, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store1, err := NewScriptStore(db, scriptsDir, nil)
+	if err != nil {
+		t.Fatalf("NewScriptStore: %v", err)
+	}
 	store1.Create("test.star", "def main(): pass", "admin")
 	store1.Approve("test.star", "admin")
 
-	// Create new store instance - should load existing approvals
-	store2, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store2, err := NewScriptStore(db, scriptsDir, nil)
+	if err != nil {
+		t.Fatalf("NewScriptStore: %v", err)
+	}
 
 	script, _ := store2.Get("test.star", false)
 	if script.Status != StatusApproved {
@@ -319,11 +307,7 @@ def get_weather():
 }
 
 func TestScriptStore_AutoAddExtension(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store, _ := newScriptStore(t, nil)
 
 	// Create without .star extension
 	script, err := store.Create("test", "def main(): pass", "admin")
@@ -337,11 +321,7 @@ func TestScriptStore_AutoAddExtension(t *testing.T) {
 }
 
 func TestScriptStore_DuplicateCreate(t *testing.T) {
-	tmpDir := t.TempDir()
-	scriptsDir := filepath.Join(tmpDir, "scripts")
-	dataDir := filepath.Join(tmpDir, "data")
-
-	store, _ := NewScriptStore(scriptsDir, dataDir, nil)
+	store, _ := newScriptStore(t, nil)
 
 	store.Create("test.star", "def main(): pass", "admin")
 

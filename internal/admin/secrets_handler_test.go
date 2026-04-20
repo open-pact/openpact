@@ -2,16 +2,26 @@ package admin
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/open-pact/openpact/internal/storage"
+	"github.com/open-pact/openpact/internal/storage/secrets"
 )
 
 func newTestSecretHandlers(t *testing.T) (*SecretHandlers, *SecretStore) {
 	t.Helper()
-	store := NewSecretStore(t.TempDir())
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	store, err := secrets.NewStore(storage.NewTestDB(t), key)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
 	handlers := NewSecretHandlers(store, nil)
 	return handlers, store
 }
@@ -39,8 +49,8 @@ func TestListSecrets_Empty(t *testing.T) {
 func TestListSecrets_WithSecrets(t *testing.T) {
 	handlers, store := newTestSecretHandlers(t)
 
-	store.Set("ALPHA_SECRET", "alpha_value")
-	store.Set("BETA_SECRET", "beta_value")
+	store.Set(context.Background(), "ALPHA_SECRET", "alpha_value")
+	store.Set(context.Background(), "BETA_SECRET", "beta_value")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
 	w := httptest.NewRecorder()
@@ -70,8 +80,8 @@ func TestListSecrets_WithSecrets(t *testing.T) {
 func TestListSecrets_NeverReturnsValues(t *testing.T) {
 	handlers, store := newTestSecretHandlers(t)
 
-	store.Set("MY_SECRET", "super_secret_value_12345")
-	store.Set("OTHER_SECRET", "another_secret_67890")
+	store.Set(context.Background(), "MY_SECRET", "super_secret_value_12345")
+	store.Set(context.Background(), "OTHER_SECRET", "another_secret_67890")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
 	w := httptest.NewRecorder()
@@ -102,7 +112,7 @@ func TestCreateSecret_Success(t *testing.T) {
 	}
 
 	// Verify it was stored
-	val, err := store.Get("NEW_KEY")
+	val, err := store.Get(context.Background(), "NEW_KEY")
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -154,7 +164,7 @@ func TestCreateSecret_EmptyValue(t *testing.T) {
 func TestCreateSecret_Duplicate(t *testing.T) {
 	handlers, store := newTestSecretHandlers(t)
 
-	store.Create("EXISTING_KEY", "existing_value")
+	store.Create(context.Background(), "EXISTING_KEY", "existing_value")
 
 	body := `{"name":"EXISTING_KEY","value":"new_value"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
@@ -183,7 +193,7 @@ func TestCreateSecret_InvalidJSON(t *testing.T) {
 func TestUpdateSecret_Success(t *testing.T) {
 	handlers, store := newTestSecretHandlers(t)
 
-	store.Create("UPDATE_ME", "original")
+	store.Create(context.Background(), "UPDATE_ME", "original")
 
 	body := `{"value":"updated_value"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/secrets/UPDATE_ME", bytes.NewBufferString(body))
@@ -195,7 +205,7 @@ func TestUpdateSecret_Success(t *testing.T) {
 		t.Errorf("Expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	val, _ := store.Get("UPDATE_ME")
+	val, _ := store.Get(context.Background(), "UPDATE_ME")
 	if val != "updated_value" {
 		t.Errorf("Expected 'updated_value', got '%s'", val)
 	}
@@ -218,7 +228,7 @@ func TestUpdateSecret_NotFound(t *testing.T) {
 func TestUpdateSecret_EmptyValue(t *testing.T) {
 	handlers, store := newTestSecretHandlers(t)
 
-	store.Create("MY_KEY", "original")
+	store.Create(context.Background(), "MY_KEY", "original")
 
 	body := `{"value":""}`
 	req := httptest.NewRequest(http.MethodPut, "/api/secrets/MY_KEY", bytes.NewBufferString(body))
@@ -234,7 +244,7 @@ func TestUpdateSecret_EmptyValue(t *testing.T) {
 func TestUpdateSecret_InvalidJSON(t *testing.T) {
 	handlers, store := newTestSecretHandlers(t)
 
-	store.Create("MY_KEY", "original")
+	store.Create(context.Background(), "MY_KEY", "original")
 
 	req := httptest.NewRequest(http.MethodPut, "/api/secrets/MY_KEY", bytes.NewBufferString("bad json"))
 	w := httptest.NewRecorder()
@@ -249,7 +259,7 @@ func TestUpdateSecret_InvalidJSON(t *testing.T) {
 func TestDeleteSecret_Success(t *testing.T) {
 	handlers, store := newTestSecretHandlers(t)
 
-	store.Create("DELETE_ME", "value")
+	store.Create(context.Background(), "DELETE_ME", "value")
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/secrets/DELETE_ME", nil)
 	w := httptest.NewRecorder()
@@ -261,7 +271,7 @@ func TestDeleteSecret_Success(t *testing.T) {
 	}
 
 	// Verify deleted
-	_, err := store.Get("DELETE_ME")
+	_, err := store.Get(context.Background(), "DELETE_ME")
 	if err != ErrSecretNotFound {
 		t.Error("Expected secret to be deleted")
 	}
@@ -281,7 +291,12 @@ func TestDeleteSecret_NotFound(t *testing.T) {
 }
 
 func TestSecretHandlers_OnChangeCallback(t *testing.T) {
-	store := NewSecretStore(t.TempDir())
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	store, err := secrets.NewStore(storage.NewTestDB(t), key)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
 	callCount := 0
 	handlers := NewSecretHandlers(store, func() {
 		callCount++

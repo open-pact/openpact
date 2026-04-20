@@ -5,19 +5,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/open-pact/openpact/internal/storage"
 )
 
-func newHandlers(t *testing.T) (*ConfigHandlers, string) {
+func newHandlers(t *testing.T) *ConfigHandlers {
 	t.Helper()
-	dir := t.TempDir()
-	return NewConfigHandlers(dir), dir
+	return NewConfigHandlers(storage.NewTestDB(t))
 }
 
 func TestAdvancedSettings_GetDefaults(t *testing.T) {
-	h, _ := newHandlers(t)
+	h := newHandlers(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config/advanced", nil)
 	rec := httptest.NewRecorder()
@@ -45,7 +44,7 @@ func TestAdvancedSettings_GetDefaults(t *testing.T) {
 }
 
 func TestAdvancedSettings_PutAndGetRoundTrip(t *testing.T) {
-	h, dir := newHandlers(t)
+	h := newHandlers(t)
 
 	body := `{
 		"logging":   {"level": "debug", "json": true},
@@ -58,11 +57,6 @@ func TestAdvancedSettings_PutAndGetRoundTrip(t *testing.T) {
 	h.HandleAdvanced(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("put status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	// File should exist.
-	if _, err := os.Stat(filepath.Join(dir, "advanced_settings.json")); err != nil {
-		t.Fatalf("expected advanced_settings.json: %v", err)
 	}
 
 	// Round-trip GET should return what we wrote.
@@ -85,7 +79,7 @@ func TestAdvancedSettings_PutAndGetRoundTrip(t *testing.T) {
 }
 
 func TestAdvancedSettings_BadMethod(t *testing.T) {
-	h, _ := newHandlers(t)
+	h := newHandlers(t)
 	req := httptest.NewRequest(http.MethodDelete, "/api/config/advanced", nil)
 	rec := httptest.NewRecorder()
 	h.HandleAdvanced(rec, req)
@@ -95,7 +89,7 @@ func TestAdvancedSettings_BadMethod(t *testing.T) {
 }
 
 func TestAdvancedSettings_BadJSON(t *testing.T) {
-	h, _ := newHandlers(t)
+	h := newHandlers(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/config/advanced", bytes.NewBufferString("{not json"))
 	rec := httptest.NewRecorder()
 	h.HandleAdvanced(rec, req)
@@ -105,11 +99,12 @@ func TestAdvancedSettings_BadJSON(t *testing.T) {
 }
 
 func TestIntegrations_RoundTrip(t *testing.T) {
-	h, _ := newHandlers(t)
+	h := newHandlers(t)
 
 	body := `{
 		"calendars": [{"name": "Work", "url": "https://example/c.ics"}],
-		"vault": {"path": "/home/u/vault", "git_repo": "", "auto_sync": true}
+		"vault": {"path": "/home/u/vault", "git_repo": "", "auto_sync": true},
+		"github": {"enabled": true}
 	}`
 	req := httptest.NewRequest(http.MethodPut, "/api/config/integrations", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
@@ -132,10 +127,13 @@ func TestIntegrations_RoundTrip(t *testing.T) {
 	if got.Vault.Path != "/home/u/vault" || !got.Vault.AutoSync {
 		t.Errorf("Vault round-trip lost: %+v", got.Vault)
 	}
+	if !got.GitHub.Enabled {
+		t.Errorf("GitHub.Enabled round-trip lost: %+v", got.GitHub)
+	}
 }
 
 func TestIntegrations_EmptyReturnsEmptyList(t *testing.T) {
-	h, _ := newHandlers(t)
+	h := newHandlers(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config/integrations", nil)
 	rec := httptest.NewRecorder()

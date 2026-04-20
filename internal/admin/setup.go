@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
@@ -8,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/open-pact/openpact/internal/storage/kv"
+	"github.com/open-pact/openpact/internal/storage/users"
 )
 
 // SetupRequest represents the first-run setup request.
@@ -37,16 +42,15 @@ type ProfileRequest struct {
 	Timezone    string `json:"timezone"`
 }
 
-// SetupState tracks multi-step setup progress.
-type SetupState struct {
-	ProfileComplete  bool `json:"profile_complete"`
-	ProviderComplete bool `json:"provider_complete"`
-}
+// SetupState tracks multi-step setup progress. Type alias to the kv
+// package so the admin API shape is untouched while the data lives
+// in op_kv rows (scope='setup_state').
+type SetupState = kv.SetupState
 
 // SetupHandler handles first-run setup.
 type SetupHandler struct {
-	users        *UserStore
-	dataDir      string
+	users        *users.Store
+	db           *sql.DB
 	aiDataDir    string
 	jwt          *JWTManager
 	secureCookie bool
@@ -60,10 +64,10 @@ type SetupHandler struct {
 // required so POST /api/setup can issue a refresh cookie on success —
 // the remaining setup steps then run authenticated just like any other
 // admin endpoint, so /api/engine/* never has to be publicly reachable.
-func NewSetupHandler(users *UserStore, dataDir, aiDataDir string, jwt *JWTManager, secureCookie bool, defaultModelSet func() bool) *SetupHandler {
+func NewSetupHandler(users *users.Store, db *sql.DB, aiDataDir string, jwt *JWTManager, secureCookie bool, defaultModelSet func() bool) *SetupHandler {
 	return &SetupHandler{
 		users:           users,
-		dataDir:         dataDir,
+		db:              db,
 		aiDataDir:       aiDataDir,
 		jwt:             jwt,
 		secureCookie:    secureCookie,
@@ -71,36 +75,21 @@ func NewSetupHandler(users *UserStore, dataDir, aiDataDir string, jwt *JWTManage
 	}
 }
 
-func (h *SetupHandler) setupStatePath() string {
-	return filepath.Join(h.dataDir, "setup_state.json")
-}
-
 func (h *SetupHandler) loadSetupState() (*SetupState, error) {
-	data, err := os.ReadFile(h.setupStatePath())
+	s, err := kv.LoadSetupState(context.Background(), h.db)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &SetupState{}, nil
-		}
 		return nil, err
 	}
-	var state SetupState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, err
-	}
-	return &state, nil
+	return &s, nil
 }
 
 func (h *SetupHandler) saveSetupState(state *SetupState) error {
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(h.setupStatePath(), data, 0644)
+	return kv.SaveSetupState(context.Background(), h.db, *state)
 }
 
 // currentSetupStep returns the current setup step.
 func (h *SetupHandler) currentSetupStep() string {
-	if !h.users.HasUsers() {
+	if !h.users.HasUsers(context.Background()) {
 		return "account"
 	}
 	state, err := h.loadSetupState()
@@ -128,7 +117,7 @@ func (h *SetupHandler) Provider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.users.HasUsers() {
+	if !h.users.HasUsers(r.Context()) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error":   "account_required",
@@ -194,7 +183,7 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Check if setup is already complete
-	if h.users.HasUsers() {
+	if h.users.HasUsers(r.Context()) {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error":   "setup_complete",
@@ -224,10 +213,10 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate passwords match and meet requirements
-	if err := ValidatePasswords(req.Password, req.ConfirmPassword); err != nil {
+	if err := users.ValidatePasswords(req.Password, req.ConfirmPassword); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		errMsg := "Password does not meet requirements"
-		if errors.Is(err, ErrPasswordMismatch) {
+		if errors.Is(err, users.ErrPasswordMismatch) {
 			errMsg = "Passwords do not match"
 		}
 		json.NewEncoder(w).Encode(map[string]string{
@@ -238,7 +227,7 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the user
-	_, err := h.users.Create(req.Username, req.Password)
+	_, err := h.users.Create(r.Context(), req.Username, req.Password)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
@@ -283,7 +272,7 @@ func (h *SetupHandler) Profile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Must have a user account first
-	if !h.users.HasUsers() {
+	if !h.users.HasUsers(r.Context()) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error":   "account_required",
@@ -399,7 +388,7 @@ func (h *SetupHandler) Profile(w http.ResponseWriter, r *http.Request) {
 }
 
 // RequireSetupMiddleware blocks all requests (except setup endpoints) when setup is required.
-func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler) http.Handler {
+func RequireSetupMiddleware(userStore *users.Store, db *sql.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Always allow setup endpoints, session/auth endpoints
@@ -422,7 +411,7 @@ func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler)
 			}
 
 			// If no users exist, block all other endpoints (account step)
-			if !users.HasUsers() {
+			if !userStore.HasUsers(r.Context()) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				json.NewEncoder(w).Encode(map[string]interface{}{
@@ -435,11 +424,7 @@ func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler)
 				return
 			}
 
-			statePath := filepath.Join(dataDir, "setup_state.json")
-			var state SetupState
-			if data, err := os.ReadFile(statePath); err == nil {
-				_ = json.Unmarshal(data, &state)
-			}
+			state, _ := kv.LoadSetupState(r.Context(), db)
 
 			if !state.ProfileComplete {
 				w.Header().Set("Content-Type", "application/json")

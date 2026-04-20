@@ -2,17 +2,32 @@ package admin
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/open-pact/openpact/internal/storage"
+	"github.com/open-pact/openpact/internal/storage/secrets"
 )
 
 func setupTestServer(t *testing.T) *Server {
 	tmpDir := t.TempDir()
+	db := storage.NewTestDB(t)
+
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	secretStore, err := secrets.NewStore(db, key)
+	if err != nil {
+		t.Fatalf("secrets.NewStore: %v", err)
+	}
+
 	config := Config{
+		DB:            db,
+		Secrets:       secretStore,
 		Bind:          "localhost:8080",
 		DataDir:       tmpDir,
 		ScriptsDir:    tmpDir + "/scripts",

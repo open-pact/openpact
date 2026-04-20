@@ -1,9 +1,10 @@
 package admin
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/open-pact/openpact/internal/storage/approvals"
 )
 
 var (
@@ -20,62 +23,50 @@ var (
 	ErrScriptModified    = errors.New("script modified since approval")
 )
 
-// ScriptStatus represents the approval status of a script.
-type ScriptStatus string
+// ScriptStatus mirrors approvals.Status at the admin API boundary so
+// the existing JSON wire format stays stable. A future refactor can
+// drop this re-export once the UI imports from the storage package.
+type ScriptStatus = approvals.Status
 
 const (
-	StatusPending  ScriptStatus = "pending"
-	StatusApproved ScriptStatus = "approved"
-	StatusRejected ScriptStatus = "rejected"
+	StatusPending  = approvals.StatusPending
+	StatusApproved = approvals.StatusApproved
+	StatusRejected = approvals.StatusRejected
 )
 
 // Script represents a Starlark script with its metadata.
 type Script struct {
-	Name            string       `json:"name"`
-	Source          string       `json:"source,omitempty"` // Only included when requested
-	Hash            string       `json:"hash"`
-	Status          ScriptStatus `json:"status"`
-	Description     string       `json:"description,omitempty"`
-	RequiredSecrets []string     `json:"required_secrets,omitempty"`
-	CreatedAt       time.Time    `json:"created_at"`
-	ModifiedAt      time.Time    `json:"modified_at"`
-	ApprovedAt      *time.Time   `json:"approved_at,omitempty"`
-	ApprovedBy      string       `json:"approved_by,omitempty"`
-	RejectedAt      *time.Time   `json:"rejected_at,omitempty"`
-	RejectedBy      string       `json:"rejected_by,omitempty"`
-	RejectReason    string       `json:"reject_reason,omitempty"`
+	Name            string          `json:"name"`
+	Source          string          `json:"source,omitempty"` // Only included when requested
+	Hash            string          `json:"hash"`
+	Status          ScriptStatus    `json:"status"`
+	Description     string          `json:"description,omitempty"`
+	RequiredSecrets []string        `json:"required_secrets,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	ModifiedAt      time.Time       `json:"modified_at"`
+	ApprovedAt      *time.Time      `json:"approved_at,omitempty"`
+	ApprovedBy      string          `json:"approved_by,omitempty"`
+	RejectedAt      *time.Time      `json:"rejected_at,omitempty"`
+	RejectedBy      string          `json:"rejected_by,omitempty"`
+	RejectReason    string          `json:"reject_reason,omitempty"`
 }
 
-// Approval represents the approval state of a script.
-type Approval struct {
-	Hash         string       `json:"hash"`
-	Status       ScriptStatus `json:"status"`
-	ApprovedAt   *time.Time   `json:"approved_at,omitempty"`
-	ApprovedBy   string       `json:"approved_by,omitempty"`
-	RejectedAt   *time.Time   `json:"rejected_at,omitempty"`
-	RejectedBy   string       `json:"rejected_by,omitempty"`
-	RejectReason string       `json:"reject_reason,omitempty"`
-	CreatedAt    time.Time    `json:"created_at"`
-	ModifiedAt   time.Time    `json:"modified_at"`
-}
-
-// ScriptStore manages scripts and their approval states.
+// ScriptStore manages scripts and their approval states. Script
+// source still lives on disk under ScriptsDir/*.star (see
+// ai/specs/starklark-to-db.md for the future move to DB); approval
+// state is persisted via the storage/approvals package.
 type ScriptStore struct {
-	mu            sync.RWMutex
-	scriptsDir    string
-	approvalsFile string
-	approvals     map[string]*Approval // script name -> approval
-	allowlist     map[string]bool      // always-approved scripts
+	mu         sync.RWMutex
+	scriptsDir string
+	approvals  *approvals.Store
+	allowlist  map[string]bool
 }
 
-// NewScriptStore creates a new script store.
-func NewScriptStore(scriptsDir, dataDir string, allowlist []string) (*ScriptStore, error) {
+// NewScriptStore creates a new script store backed by the shared DB
+// (for approval metadata) and the workspace scripts dir (for source).
+func NewScriptStore(db *sql.DB, scriptsDir string, allowlist []string) (*ScriptStore, error) {
 	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create scripts directory: %w", err)
-	}
-
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
 	allowlistMap := make(map[string]bool)
@@ -83,36 +74,11 @@ func NewScriptStore(scriptsDir, dataDir string, allowlist []string) (*ScriptStor
 		allowlistMap[name] = true
 	}
 
-	store := &ScriptStore{
-		scriptsDir:    scriptsDir,
-		approvalsFile: filepath.Join(dataDir, "approvals.json"),
-		approvals:     make(map[string]*Approval),
-		allowlist:     allowlistMap,
-	}
-
-	if err := store.loadApprovals(); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to load approvals: %w", err)
-	}
-
-	return store, nil
-}
-
-func (s *ScriptStore) loadApprovals() error {
-	data, err := os.ReadFile(s.approvalsFile)
-	if err != nil {
-		return err
-	}
-
-	return json.Unmarshal(data, &s.approvals)
-}
-
-func (s *ScriptStore) saveApprovals() error {
-	data, err := json.MarshalIndent(s.approvals, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(s.approvalsFile, data, 0600)
+	return &ScriptStore{
+		scriptsDir: scriptsDir,
+		approvals:  approvals.NewStore(db),
+		allowlist:  allowlistMap,
+	}, nil
 }
 
 // computeHash computes the SHA256 hash of the script content.
@@ -207,23 +173,31 @@ func (s *ScriptStore) getScript(name string, includeSource bool) (*Script, error
 		script.Source = string(source)
 	}
 
-	// Determine status
+	// Determine status from allowlist or the approvals store.
 	if s.allowlist[name] {
 		script.Status = StatusApproved
-	} else if approval, ok := s.approvals[name]; ok {
-		script.Status = approval.Status
-		script.ApprovedAt = approval.ApprovedAt
-		script.ApprovedBy = approval.ApprovedBy
-		script.RejectedAt = approval.RejectedAt
-		script.RejectedBy = approval.RejectedBy
-		script.RejectReason = approval.RejectReason
-		script.CreatedAt = approval.CreatedAt
+		return script, nil
+	}
 
-		// If hash doesn't match approval, status is pending (modified)
-		if approval.Status == StatusApproved && approval.Hash != hash {
-			script.Status = StatusPending
-		}
-	} else {
+	approval, err := s.approvals.Get(context.Background(), name)
+	if err != nil {
+		return nil, fmt.Errorf("load approval: %w", err)
+	}
+	if approval == nil {
+		script.Status = StatusPending
+		return script, nil
+	}
+
+	script.Status = approval.Status
+	script.ApprovedAt = approval.ApprovedAt
+	script.ApprovedBy = approval.ApprovedBy
+	script.RejectedAt = approval.RejectedAt
+	script.RejectedBy = approval.RejectedBy
+	script.RejectReason = approval.RejectReason
+	script.CreatedAt = approval.CreatedAt
+
+	// If hash doesn't match approval, status is pending (modified).
+	if approval.Status == StatusApproved && approval.Hash != hash {
 		script.Status = StatusPending
 	}
 
@@ -248,19 +222,17 @@ func (s *ScriptStore) Create(name, source, createdBy string) (*Script, error) {
 		return nil, err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	hash := computeHash(source)
 
-	s.approvals[name] = &Approval{
+	if err := s.approvals.Upsert(context.Background(), approvals.Approval{
+		ScriptName: name,
 		Hash:       hash,
 		Status:     StatusPending,
 		CreatedAt:  now,
 		ModifiedAt: now,
-	}
-
-	if err := s.saveApprovals(); err != nil {
+	}); err != nil {
 		os.Remove(path)
-		delete(s.approvals, name)
 		return nil, err
 	}
 
@@ -281,26 +253,26 @@ func (s *ScriptStore) Update(name, source, updatedBy string) (*Script, error) {
 		return nil, err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	hash := computeHash(source)
 
-	// Reset to pending status when content changes
-	if approval, ok := s.approvals[name]; ok {
-		approval.Hash = hash
-		approval.Status = StatusPending
-		approval.ModifiedAt = now
-		approval.ApprovedAt = nil
-		approval.ApprovedBy = ""
-	} else {
-		s.approvals[name] = &Approval{
-			Hash:       hash,
-			Status:     StatusPending,
-			CreatedAt:  now,
-			ModifiedAt: now,
-		}
+	existing, err := s.approvals.Get(context.Background(), name)
+	if err != nil {
+		return nil, err
 	}
 
-	if err := s.saveApprovals(); err != nil {
+	newApproval := approvals.Approval{
+		ScriptName: name,
+		Hash:       hash,
+		Status:     StatusPending,
+		CreatedAt:  now,
+		ModifiedAt: now,
+	}
+	if existing != nil {
+		// Preserve CreatedAt; reset approval metadata.
+		newApproval.CreatedAt = existing.CreatedAt
+	}
+	if err := s.approvals.Upsert(context.Background(), newApproval); err != nil {
 		return nil, err
 	}
 
@@ -320,9 +292,7 @@ func (s *ScriptStore) Delete(name string) error {
 		return err
 	}
 
-	delete(s.approvals, name)
-	s.saveApprovals() // Ignore error, script is already deleted
-
+	_ = s.approvals.Delete(context.Background(), name)
 	return nil
 }
 
@@ -336,29 +306,22 @@ func (s *ScriptStore) Approve(name, approvedBy string) (*Script, error) {
 		return nil, err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
+	existing, _ := s.approvals.Get(context.Background(), name)
 
-	if approval, ok := s.approvals[name]; ok {
-		approval.Status = StatusApproved
-		approval.Hash = script.Hash
-		approval.ApprovedAt = &now
-		approval.ApprovedBy = approvedBy
-		approval.ModifiedAt = now
-		approval.RejectedAt = nil
-		approval.RejectedBy = ""
-		approval.RejectReason = ""
-	} else {
-		s.approvals[name] = &Approval{
-			Hash:       script.Hash,
-			Status:     StatusApproved,
-			ApprovedAt: &now,
-			ApprovedBy: approvedBy,
-			CreatedAt:  now,
-			ModifiedAt: now,
-		}
+	a := approvals.Approval{
+		ScriptName: name,
+		Hash:       script.Hash,
+		Status:     StatusApproved,
+		ApprovedAt: &now,
+		ApprovedBy: approvedBy,
+		CreatedAt:  now,
+		ModifiedAt: now,
 	}
-
-	if err := s.saveApprovals(); err != nil {
+	if existing != nil {
+		a.CreatedAt = existing.CreatedAt
+	}
+	if err := s.approvals.Upsert(context.Background(), a); err != nil {
 		return nil, err
 	}
 
@@ -375,27 +338,23 @@ func (s *ScriptStore) Reject(name, rejectedBy, reason string) (*Script, error) {
 		return nil, err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
+	existing, _ := s.approvals.Get(context.Background(), name)
 
-	if approval, ok := s.approvals[name]; ok {
-		approval.Status = StatusRejected
-		approval.RejectedAt = &now
-		approval.RejectedBy = rejectedBy
-		approval.RejectReason = reason
-		approval.ModifiedAt = now
-	} else {
-		s.approvals[name] = &Approval{
-			Hash:         script.Hash,
-			Status:       StatusRejected,
-			RejectedAt:   &now,
-			RejectedBy:   rejectedBy,
-			RejectReason: reason,
-			CreatedAt:    now,
-			ModifiedAt:   now,
-		}
+	a := approvals.Approval{
+		ScriptName:   name,
+		Hash:         script.Hash,
+		Status:       StatusRejected,
+		RejectedAt:   &now,
+		RejectedBy:   rejectedBy,
+		RejectReason: reason,
+		CreatedAt:    now,
+		ModifiedAt:   now,
 	}
-
-	if err := s.saveApprovals(); err != nil {
+	if existing != nil {
+		a.CreatedAt = existing.CreatedAt
+	}
+	if err := s.approvals.Upsert(context.Background(), a); err != nil {
 		return nil, err
 	}
 
@@ -407,7 +366,6 @@ func (s *ScriptStore) CanExecute(name string) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Allowlisted scripts can always execute
 	if s.allowlist[name] {
 		return nil
 	}
@@ -421,11 +379,12 @@ func (s *ScriptStore) CanExecute(name string) error {
 		return ErrScriptNotApproved
 	}
 
-	// Check hash matches (script wasn't modified since approval)
-	if approval, ok := s.approvals[name]; ok {
-		if approval.Hash != script.Hash {
-			return ErrScriptModified
-		}
+	approval, err := s.approvals.Get(context.Background(), name)
+	if err != nil {
+		return err
+	}
+	if approval != nil && approval.Hash != script.Hash {
+		return ErrScriptModified
 	}
 
 	return nil

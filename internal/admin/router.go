@@ -1,17 +1,36 @@
 package admin
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	version "github.com/open-pact/openpact"
+	"github.com/open-pact/openpact/internal/ratelimit"
+	"github.com/open-pact/openpact/internal/storage/chatproviders"
+	"github.com/open-pact/openpact/internal/storage/kv"
+	"github.com/open-pact/openpact/internal/storage/schedules"
+	"github.com/open-pact/openpact/internal/storage/secrets"
+	"github.com/open-pact/openpact/internal/storage/users"
 	"github.com/stack-bound/stackllm/session"
 )
 
 // Config holds the admin server configuration.
 type Config struct {
+	// DB is the shared *sql.DB the admin server reads/writes through
+	// for every DB-backed store (users, approvals, providers,
+	// schedules, kv, calendars, channels). Required.
+	DB *sql.DB
+
+	// Secrets is the encrypted-at-rest secrets store. Constructed at
+	// app boot with the workspace's data_encryption_key so every
+	// component shares one cipher instance.
+	Secrets *secrets.Store
+
 	Bind          string
 	DataDir       string
 	ScriptsDir    string
@@ -36,7 +55,7 @@ func DefaultConfig() Config {
 // Server is the admin HTTP server.
 type Server struct {
 	config           Config
-	users            *UserStore
+	users            *users.Store
 	scripts          *ScriptStore
 	jwt              *JWTManager
 	setupHandler     *SetupHandler
@@ -55,6 +74,12 @@ type Server struct {
 
 // NewServer creates a new admin server.
 func NewServer(config Config) (*Server, error) {
+	if config.DB == nil {
+		return nil, fmt.Errorf("admin: Config.DB is required")
+	}
+	if config.Secrets == nil {
+		return nil, fmt.Errorf("admin: Config.Secrets is required")
+	}
 	// Initialize JWT
 	secret, err := GetOrCreateJWTSecret(config.DataDir)
 	if err != nil {
@@ -68,35 +93,32 @@ func NewServer(config Config) (*Server, error) {
 		Issuer:        "openpact",
 	})
 
-	users, err := NewUserStore(config.DataDir)
-	if err != nil {
-		return nil, err
-	}
+	userStore := users.NewStore(config.DB)
 
-	scripts, err := NewScriptStore(config.ScriptsDir, config.DataDir, config.Allowlist)
+	scripts, err := NewScriptStore(config.DB, config.ScriptsDir, config.Allowlist)
 	if err != nil {
 		return nil, err
 	}
 
 	secureCookie := ShouldUseSecureCookies(config.Bind)
 
-	secretStore := NewSecretStore(config.DataDir)
-	providerStore := NewProviderStore(config.DataDir)
-	scheduleStore := NewScheduleStore(config.DataDir)
+	secretStore := config.Secrets
+	providerStore := chatproviders.NewStore(config.DB)
+	scheduleStore := schedules.NewStore(config.DB)
 
 	s := &Server{
 		config:           config,
-		users:            users,
+		users:            userStore,
 		scripts:          scripts,
 		jwt:              jwt,
-		setupHandler:     NewSetupHandler(users, config.DataDir, config.AIDataDir, jwt, secureCookie, nil),
-		sessionHandler:   NewSessionHandler(users, jwt, secureCookie),
+		setupHandler:     NewSetupHandler(userStore, config.DB, config.AIDataDir, jwt, secureCookie, nil),
+		sessionHandler:   NewSessionHandler(userStore, jwt, secureCookie),
 		scriptHandlers:   NewScriptHandlers(scripts),
 		secretHandlers:   NewSecretHandlers(secretStore, nil),
 		providerHandlers: NewProviderHandlers(providerStore),
 		scheduleStore:    scheduleStore,
 		scheduleHandlers: NewScheduleHandlers(scheduleStore),
-		configHandlers:   NewConfigHandlers(config.DataDir),
+		configHandlers:   NewConfigHandlers(config.DB),
 		secureCookie:     secureCookie,
 	}
 	s.engineSessions = NewEngineSessionsHandler(s.getSessionStore)
@@ -137,13 +159,28 @@ func (s *Server) SetDefaultModelCheck(fn func() bool) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
-	return RequireSetupMiddleware(s.users, s.config.DataDir)(mux)
+	return RequireSetupMiddleware(s.users, s.config.DB)(mux)
 }
 
 // registerAPIRoutes registers every /api/* handler on the mux. Shared by
 // Handler() and HandlerWithUI() so the dual-handler footgun (adding a
 // route to one but not the other) can never happen.
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
+	// Per-IP rate limit for brute-force targets. Config comes from
+	// advanced_settings.rate_limit in op_kv; anything outside this
+	// wrap (normal auth'd API traffic) is unaffected.
+	advSettings, _ := kv.LoadAdvancedSettings(context.Background(), s.config.DB)
+	bruteForceGate := LoginRateLimiter(ratelimit.Config{
+		Rate:  advSettings.RateLimit.Rate,
+		Burst: advSettings.RateLimit.Burst,
+	})
+	gated := func(h http.HandlerFunc) http.HandlerFunc {
+		wrapped := bruteForceGate(h)
+		return func(w http.ResponseWriter, r *http.Request) {
+			wrapped.ServeHTTP(w, r)
+		}
+	}
+
 	// Version endpoint (no auth required)
 	mux.HandleFunc("/api/version", handleVersion)
 
@@ -153,12 +190,19 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/setup/status", s.setupHandler.Status)
 	mux.HandleFunc("/api/setup/profile", s.withAuth(s.setupHandler.Profile))
 	mux.HandleFunc("/api/setup/provider", s.withAuth(s.setupHandler.Provider))
-	mux.HandleFunc("/api/setup", s.setupHandler.Setup)
+	// /api/setup itself is unauthenticated by design — rate-limit it so
+	// an attacker can't spray thousands of "create account" attempts
+	// against a fresh workspace.
+	mux.HandleFunc("/api/setup", gated(s.setupHandler.Setup))
 
-	// Auth endpoints (no auth required)
-	mux.HandleFunc("/api/auth/login", s.sessionHandler.Login)
+	// Auth endpoints (no auth required). Login is per-IP rate limited
+	// to defeat password brute-forcing. Logout and /api/session bind
+	// to an existing cookie so they're cheaper for an attacker to
+	// mis-target than to just stop; we still gate /api/session to
+	// limit offline token-spraying against the refresh cookie secret.
+	mux.HandleFunc("/api/auth/login", gated(s.sessionHandler.Login))
 	mux.HandleFunc("/api/auth/logout", s.sessionHandler.Logout)
-	mux.HandleFunc("/api/session", s.sessionHandler.Session)
+	mux.HandleFunc("/api/session", gated(s.sessionHandler.Session))
 
 	// Protected endpoints (require auth)
 	mux.HandleFunc("/api/auth/me", s.withAuth(s.sessionHandler.Me))
@@ -277,11 +321,11 @@ func (s *Server) handleScriptByName(w http.ResponseWriter, r *http.Request) {
 
 // SetupRequired returns true if initial setup is required.
 func (s *Server) SetupRequired() bool {
-	return !s.users.HasUsers()
+	return !s.users.HasUsers(context.Background())
 }
 
 // Users returns the user store.
-func (s *Server) Users() *UserStore { return s.users }
+func (s *Server) Users() *users.Store { return s.users }
 
 // Scripts returns the script store.
 func (s *Server) Scripts() *ScriptStore { return s.scripts }
@@ -327,7 +371,7 @@ func (s *Server) SetChannelModeAPI(api ChannelModeAPI) {
 }
 
 // ProviderStore returns the provider store.
-func (s *Server) ProviderStore() *ProviderStore { return s.providerHandlers.store }
+func (s *Server) ProviderStore() *chatproviders.Store { return s.providerHandlers.store }
 
 // ScheduleStore returns the schedule store.
 func (s *Server) ScheduleStore() *ScheduleStore { return s.scheduleStore }

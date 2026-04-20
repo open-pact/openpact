@@ -2,24 +2,25 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/open-pact/openpact/internal/storage/kv"
 )
 
 func TestSetupHandler_Status(t *testing.T) {
-	tmpDir := t.TempDir()
-	users, _ := NewUserStore(tmpDir)
-	handler := newTestSetupHandler(t, users, tmpDir)
+	fx := newTestSetupFixture(t)
 
 	t.Run("setup required when no users", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/setup/status", nil)
 		rec := httptest.NewRecorder()
 
-		handler.Status(rec, req)
+		fx.handler.Status(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("Expected status 200, got %d", rec.Code)
@@ -37,12 +38,12 @@ func TestSetupHandler_Status(t *testing.T) {
 	})
 
 	t.Run("profile step when user exists but no profile", func(t *testing.T) {
-		users.Create("admin", "password1234567890")
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
 		req := httptest.NewRequest("GET", "/api/setup/status", nil)
 		rec := httptest.NewRecorder()
 
-		handler.Status(rec, req)
+		fx.handler.Status(rec, req)
 
 		var resp SetupStatusResponse
 		json.NewDecoder(rec.Body).Decode(&resp)
@@ -56,15 +57,14 @@ func TestSetupHandler_Status(t *testing.T) {
 	})
 
 	t.Run("setup complete when user and profile exist", func(t *testing.T) {
-		// Write setup state — both profile and provider steps complete.
-		state := SetupState{ProfileComplete: true, ProviderComplete: true}
-		data, _ := json.Marshal(state)
-		os.WriteFile(filepath.Join(tmpDir, "setup_state.json"), data, 0644)
+		if err := kv.SaveSetupState(context.Background(), fx.db, SetupState{ProfileComplete: true, ProviderComplete: true}); err != nil {
+			t.Fatalf("SaveSetupState: %v", err)
+		}
 
 		req := httptest.NewRequest("GET", "/api/setup/status", nil)
 		rec := httptest.NewRecorder()
 
-		handler.Status(rec, req)
+		fx.handler.Status(rec, req)
 
 		var resp SetupStatusResponse
 		json.NewDecoder(rec.Body).Decode(&resp)
@@ -80,15 +80,13 @@ func TestSetupHandler_Status(t *testing.T) {
 
 func TestSetupHandler_Setup(t *testing.T) {
 	t.Run("successful setup", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
 
 		body := `{"username": "admin", "password": "mysecurepassword16", "confirm_password": "mysecurepassword16"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Setup(rec, req)
+		fx.handler.Setup(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("Expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -101,23 +99,20 @@ func TestSetupHandler_Setup(t *testing.T) {
 			t.Error("Expected success to be true")
 		}
 
-		// Verify user was created
-		if !users.HasUsers() {
+		if !fx.users.HasUsers(context.Background()) {
 			t.Error("Expected user to be created")
 		}
 	})
 
 	t.Run("setup already complete", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("existing", "password1234567890")
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "existing", "password1234567890")
 
 		body := `{"username": "admin", "password": "mysecurepassword16", "confirm_password": "mysecurepassword16"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Setup(rec, req)
+		fx.handler.Setup(rec, req)
 
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("Expected status 403, got %d", rec.Code)
@@ -125,15 +120,13 @@ func TestSetupHandler_Setup(t *testing.T) {
 	})
 
 	t.Run("password mismatch", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
 
 		body := `{"username": "admin", "password": "mysecurepassword16", "confirm_password": "differentpassword"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Setup(rec, req)
+		fx.handler.Setup(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", rec.Code)
@@ -148,15 +141,13 @@ func TestSetupHandler_Setup(t *testing.T) {
 	})
 
 	t.Run("weak password", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
 
 		body := `{"username": "admin", "password": "weak", "confirm_password": "weak"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Setup(rec, req)
+		fx.handler.Setup(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", rec.Code)
@@ -164,15 +155,13 @@ func TestSetupHandler_Setup(t *testing.T) {
 	})
 
 	t.Run("empty username", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
 
 		body := `{"username": "", "password": "mysecurepassword16", "confirm_password": "mysecurepassword16"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Setup(rec, req)
+		fx.handler.Setup(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", rec.Code)
@@ -182,16 +171,14 @@ func TestSetupHandler_Setup(t *testing.T) {
 
 func TestSetupHandler_Profile(t *testing.T) {
 	t.Run("successful profile setup", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
 		body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "Matt", "timezone": "Europe/London"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("Expected status 200, got %d: %s", rec.Code, rec.Body.String())
@@ -205,7 +192,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		}
 
 		// Verify SOUL.md was written
-		soulData, err := os.ReadFile(filepath.Join(tmpDir, "SOUL.md"))
+		soulData, err := os.ReadFile(filepath.Join(fx.aiDataDir, "SOUL.md"))
 		if err != nil {
 			t.Fatalf("Failed to read SOUL.md: %v", err)
 		}
@@ -218,7 +205,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		}
 
 		// Verify USER.md was written
-		userData, err := os.ReadFile(filepath.Join(tmpDir, "USER.md"))
+		userData, err := os.ReadFile(filepath.Join(fx.aiDataDir, "USER.md"))
 		if err != nil {
 			t.Fatalf("Failed to read USER.md: %v", err)
 		}
@@ -230,28 +217,24 @@ func TestSetupHandler_Profile(t *testing.T) {
 			t.Errorf("USER.md should contain timezone, got: %s", userContent)
 		}
 
-		// Verify setup state was saved
-		stateData, err := os.ReadFile(filepath.Join(tmpDir, "setup_state.json"))
+		// Verify setup state was persisted to the DB.
+		state, err := kv.LoadSetupState(context.Background(), fx.db)
 		if err != nil {
-			t.Fatalf("Failed to read setup_state.json: %v", err)
+			t.Fatalf("LoadSetupState: %v", err)
 		}
-		var state SetupState
-		json.Unmarshal(stateData, &state)
 		if !state.ProfileComplete {
 			t.Error("Expected profile_complete to be true")
 		}
 	})
 
 	t.Run("requires account first", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
 
 		body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "Matt", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", rec.Code)
@@ -259,21 +242,18 @@ func TestSetupHandler_Profile(t *testing.T) {
 	})
 
 	t.Run("already complete", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
-		// Mark profile as complete
-		state := SetupState{ProfileComplete: true}
-		data, _ := json.Marshal(state)
-		os.WriteFile(filepath.Join(tmpDir, "setup_state.json"), data, 0644)
+		if err := kv.SaveSetupState(context.Background(), fx.db, SetupState{ProfileComplete: true}); err != nil {
+			t.Fatalf("SaveSetupState: %v", err)
+		}
 
 		body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "Matt", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("Expected status 403, got %d", rec.Code)
@@ -281,16 +261,14 @@ func TestSetupHandler_Profile(t *testing.T) {
 	})
 
 	t.Run("invalid personality", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
 		body := `{"agent_name": "Atlas", "personality": "nonexistent", "user_name": "Matt", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", rec.Code)
@@ -298,16 +276,14 @@ func TestSetupHandler_Profile(t *testing.T) {
 	})
 
 	t.Run("empty agent name", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
 		body := `{"agent_name": "", "personality": "friendly", "user_name": "Matt", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", rec.Code)
@@ -315,16 +291,14 @@ func TestSetupHandler_Profile(t *testing.T) {
 	})
 
 	t.Run("empty user name", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
 		body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Expected status 400, got %d", rec.Code)
@@ -332,36 +306,32 @@ func TestSetupHandler_Profile(t *testing.T) {
 	})
 
 	t.Run("defaults timezone to UTC", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
 		body := `{"agent_name": "Atlas", "personality": "calm", "user_name": "Matt", "timezone": ""}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("Expected status 200, got %d: %s", rec.Code, rec.Body.String())
 		}
 
-		userData, _ := os.ReadFile(filepath.Join(tmpDir, "USER.md"))
+		userData, _ := os.ReadFile(filepath.Join(fx.aiDataDir, "USER.md"))
 		if !bytes.Contains(userData, []byte("UTC")) {
 			t.Error("USER.md should default timezone to UTC")
 		}
 	})
 
 	t.Run("rejects GET method", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		handler := newTestSetupHandler(t, users, tmpDir)
+		fx := newTestSetupFixture(t)
 
 		req := httptest.NewRequest("GET", "/api/setup/profile", nil)
 		rec := httptest.NewRecorder()
 
-		handler.Profile(rec, req)
+		fx.handler.Profile(rec, req)
 
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("Expected status 405, got %d", rec.Code)
@@ -371,14 +341,13 @@ func TestSetupHandler_Profile(t *testing.T) {
 
 func TestRequireSetupMiddleware(t *testing.T) {
 	t.Run("blocks requests when setup required", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
+		fx := newTestSetupFixture(t)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		protected := RequireSetupMiddleware(users, tmpDir)(handler)
+		protected := RequireSetupMiddleware(fx.users, fx.db)(handler)
 
 		req := httptest.NewRequest("GET", "/api/scripts", nil)
 		rec := httptest.NewRecorder()
@@ -391,14 +360,13 @@ func TestRequireSetupMiddleware(t *testing.T) {
 	})
 
 	t.Run("allows setup endpoints when setup required", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
+		fx := newTestSetupFixture(t)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		protected := RequireSetupMiddleware(users, tmpDir)(handler)
+		protected := RequireSetupMiddleware(fx.users, fx.db)(handler)
 
 		// /api/setup should be allowed
 		req := httptest.NewRequest("POST", "/api/setup", nil)
@@ -432,15 +400,14 @@ func TestRequireSetupMiddleware(t *testing.T) {
 	})
 
 	t.Run("blocks when profile incomplete", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		protected := RequireSetupMiddleware(users, tmpDir)(handler)
+		protected := RequireSetupMiddleware(fx.users, fx.db)(handler)
 
 		req := httptest.NewRequest("GET", "/api/scripts", nil)
 		rec := httptest.NewRecorder()
@@ -459,20 +426,18 @@ func TestRequireSetupMiddleware(t *testing.T) {
 	})
 
 	t.Run("allows requests when setup complete", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		users, _ := NewUserStore(tmpDir)
-		users.Create("admin", "password1234567890")
+		fx := newTestSetupFixture(t)
+		fx.users.Create(context.Background(), "admin", "password1234567890")
 
-		// Write setup state — both profile and provider steps complete.
-		state := SetupState{ProfileComplete: true, ProviderComplete: true}
-		data, _ := json.Marshal(state)
-		os.WriteFile(filepath.Join(tmpDir, "setup_state.json"), data, 0644)
+		if err := kv.SaveSetupState(context.Background(), fx.db, SetupState{ProfileComplete: true, ProviderComplete: true}); err != nil {
+			t.Fatalf("SaveSetupState: %v", err)
+		}
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		protected := RequireSetupMiddleware(users, tmpDir)(handler)
+		protected := RequireSetupMiddleware(fx.users, fx.db)(handler)
 
 		req := httptest.NewRequest("GET", "/api/scripts", nil)
 		rec := httptest.NewRecorder()

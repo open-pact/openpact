@@ -2,18 +2,33 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
+	"crypto/rand"
+	"database/sql"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/open-pact/openpact/internal/chat"
 	"github.com/open-pact/openpact/internal/config"
+	"github.com/open-pact/openpact/internal/storage"
+	"github.com/open-pact/openpact/internal/storage/secrets"
 	"github.com/stack-bound/stackllm/conversation"
 	"github.com/stack-bound/stackllm/session"
 )
+
+// testSecretStore builds an encrypted secret store over the given DB
+// with a throwaway per-test key — since in-memory test DBs are reset
+// between tests, the key is never reused.
+func testSecretStore(t *testing.T, db *sql.DB) *secrets.Store {
+	t.Helper()
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	s, err := secrets.NewStore(db, key)
+	if err != nil {
+		t.Fatalf("secrets.NewStore: %v", err)
+	}
+	return s
+}
 
 func newTestOrchestrator(t *testing.T) (*Orchestrator, *config.Config) {
 	t.Helper()
@@ -21,13 +36,13 @@ func newTestOrchestrator(t *testing.T) (*Orchestrator, *config.Config) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		Workspace: config.WorkspaceConfig{Path: tmpDir},
-		Discord:   config.DiscordConfig{Enabled: false},
 	}
 	if err := cfg.Workspace.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
 
-	o, err := New(cfg, nil)
+	db := storage.NewTestDB(t)
+	o, err := New(cfg, db, testSecretStore(t, db), nil)
 	if err != nil {
 		t.Fatalf("New orchestrator: %v", err)
 	}
@@ -62,27 +77,26 @@ func TestNewOrchestrator(t *testing.T) {
 	}
 }
 
-func TestNewOrchestratorWithDiscordNoToken(t *testing.T) {
+func TestNewOrchestratorStartsWithNoProviders(t *testing.T) {
+	// After the YAML → DB migration, provider config comes from the
+	// DB only. A fresh workspace has no chat providers enabled, so the
+	// orchestrator's provider map stays empty until the admin UI
+	// enables one.
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
 		Workspace: config.WorkspaceConfig{Path: tmpDir},
-		Discord: config.DiscordConfig{
-			Enabled:      true,
-			AllowedUsers: []string{"123"},
-			AllowedChans: []string{"456"},
-		},
 	}
 	cfg.Workspace.EnsureDirs()
 
-	o, err := New(cfg, nil)
+	db2 := storage.NewTestDB(t)
+	o, err := New(cfg, db2, testSecretStore(t, db2), nil)
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
 	t.Cleanup(func() { o.stack.Close() })
 
-	// No providers should be running since tokens were not set in env.
 	if len(o.providers) != 0 {
-		t.Errorf("expected 0 running providers without tokens, got %d", len(o.providers))
+		t.Errorf("expected 0 running providers on fresh DB, got %d", len(o.providers))
 	}
 }
 
@@ -222,7 +236,12 @@ func TestChannelModePersistence(t *testing.T) {
 	}
 	cfg.Workspace.EnsureDirs()
 
-	o, err := New(cfg, nil)
+	// Share a DB between the two orchestrators so the second one sees
+	// the rows the first one wrote. (Previously this test reopened the
+	// same data dir and read the JSON file back; the DB-backed
+	// equivalent is sharing the *sql.DB handle.)
+	db := storage.NewTestDB(t)
+	o, err := New(cfg, db, testSecretStore(t, db), nil)
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
@@ -230,28 +249,10 @@ func TestChannelModePersistence(t *testing.T) {
 	o.SetChannelMode("discord", "chan1", chat.ModeThinking)
 	o.SetChannelMode("telegram", "chan2", chat.ModeTools)
 
-	path := filepath.Join(cfg.Workspace.DataDir(), "channel_modes.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read channel modes file: %v", err)
-	}
-
-	var f channelModesFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		t.Fatalf("failed to parse channel modes file: %v", err)
-	}
-
-	if f.Modes["discord:chan1"] != chat.ModeThinking {
-		t.Errorf("expected mode %q in file, got %q", chat.ModeThinking, f.Modes["discord:chan1"])
-	}
-	if f.Modes["telegram:chan2"] != chat.ModeTools {
-		t.Errorf("expected mode %q in file, got %q", chat.ModeTools, f.Modes["telegram:chan2"])
-	}
-
 	// Close the first orchestrator's stack before reopening the workspace.
 	o.stack.Close()
 
-	o2, err := New(cfg, nil)
+	o2, err := New(cfg, db, testSecretStore(t, db), nil)
 	if err != nil {
 		t.Fatalf("failed to create second orchestrator: %v", err)
 	}

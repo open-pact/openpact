@@ -1,3 +1,15 @@
+// Package config holds OpenPact's bootstrap configuration — the
+// minimal set of values that must be known BEFORE the shared SQLite
+// database is opened. Everything else (logging level, rate limit,
+// health-server address, Starlark limits, calendars, vault, GitHub,
+// chat-provider tokens, allowed users/channels, admin users,
+// schedules, secrets, setup state, channel sessions, channel modes)
+// lives in op_* tables and is managed through the admin UI.
+//
+// Runtime-mutable fields deliberately do NOT appear here. Adding
+// them back creates the class of bug the config-migration PR fixed:
+// "I edited the UI but nothing happened because the process still
+// reads the YAML."
 package config
 
 import (
@@ -8,78 +20,49 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds all OpenPact configuration
+// Config holds OpenPact's bootstrap configuration.
 type Config struct {
-	Engine    EngineConfig     `yaml:"engine"`
-	Workspace WorkspaceConfig  `yaml:"workspace"`
-	Discord   DiscordConfig    `yaml:"discord"`
-	Telegram  TelegramConfig   `yaml:"telegram"`
-	Slack     SlackConfig      `yaml:"slack"`
-	GitHub    GitHubConfig     `yaml:"github"`
-	Calendars []CalendarConfig `yaml:"calendars"`
-	Vault     VaultConfig      `yaml:"vault"`
-	Starlark  StarlarkConfig   `yaml:"starlark"`
-	Logging   LoggingConfig    `yaml:"logging"`
-	Server    ServerConfig     `yaml:"server"`
-	Admin     AdminConfig      `yaml:"admin"`
+	Engine    EngineConfig    `yaml:"engine"`
+	Workspace WorkspaceConfig `yaml:"workspace"`
+	Admin     AdminConfig     `yaml:"admin"`
+
+	// Runtime config read from the database on boot. These fields are
+	// NOT serialized to/from YAML — they're populated by cmd/openpact
+	// after opening the DB and loading advanced_settings. The struct
+	// still carries them because the scheduler + MCP script tool
+	// consume the values through `*Config` before the orchestrator
+	// exists to pass them around directly.
+	Starlark StarlarkRuntime `yaml:"-"`
 }
 
-// AdminConfig configures the admin web UI
+// AdminConfig configures the admin web UI.
 type AdminConfig struct {
 	Enabled   bool     `yaml:"enabled"`   // Enable admin UI
 	Bind      string   `yaml:"bind"`      // Address to bind (e.g., "localhost:8080")
 	Allowlist []string `yaml:"allowlist"` // Always-approved scripts
 }
 
-// LoggingConfig configures structured logging
-type LoggingConfig struct {
-	Level string `yaml:"level"` // debug, info, warn, error
-	JSON  bool   `yaml:"json"`  // Output JSON format
-}
-
-// ServerConfig configures the HTTP server (health/metrics)
-type ServerConfig struct {
-	HealthAddr string          `yaml:"health_addr"` // Address for health endpoint
-	RateLimit  RateLimitConfig `yaml:"rate_limit"`
-}
-
-// RateLimitConfig configures rate limiting
-type RateLimitConfig struct {
-	Rate  float64 `yaml:"rate"`  // Requests per second
-	Burst int     `yaml:"burst"` // Max burst size
-}
-
-// GitHubConfig configures GitHub API integration
-type GitHubConfig struct {
-	Enabled bool `yaml:"enabled"` // Enable GitHub tools
-}
-
-// VaultConfig configures Obsidian vault integration
-type VaultConfig struct {
-	Path     string `yaml:"path"`      // Local path to vault
-	GitRepo  string `yaml:"git_repo"`  // Git repository URL (optional)
-	AutoSync bool   `yaml:"auto_sync"` // Auto pull/push on read/write
-}
-
-// CalendarConfig configures a calendar feed
-type CalendarConfig struct {
-	Name string `yaml:"name"` // Display name
-	URL  string `yaml:"url"`  // iCal feed URL
-}
-
-// EngineConfig configures the AI engine. Provider credentials, the default
-// model, and every other runtime setting now live in stackllm's own stores
-// under <workspace>/secure/data/ and are mutated through the admin UI's
-// /api/engine/ endpoints. Only the SQLite database path is surfaced here,
-// and only as an optional override — the default is
-// <workspace>/secure/data/stackllm.db.
+// EngineConfig configures the AI engine. Provider credentials, the
+// default model, and every other runtime setting live in stackllm's
+// own stores under <workspace>/secure/data/ or OpenPact's op_* tables;
+// only the SQLite database path is surfaced here, and only as an
+// optional override — the default is <workspace>/secure/data/stackllm.db.
 type EngineConfig struct {
 	DBPath string `yaml:"db_path,omitempty"` // Optional override for the stackllm SQLite path
 }
 
-// WorkspaceConfig configures workspace paths
+// WorkspaceConfig configures workspace paths.
 type WorkspaceConfig struct {
 	Path string `yaml:"path"` // Base workspace path
+}
+
+// StarlarkRuntime mirrors advanced_settings.starlark for the packages
+// that still read it off *Config (scheduler, MCP script tool). Values
+// are populated in main.go from the DB — not from YAML.
+type StarlarkRuntime struct {
+	Enabled        bool
+	MaxExecutionMs int64
+	MaxMemoryMB    int
 }
 
 // SecureDir returns the path to the secure directory (system-only, AI has zero access).
@@ -102,12 +85,11 @@ func (w WorkspaceConfig) ScriptsDir() string {
 	return filepath.Join(w.Path, "ai-data", "scripts")
 }
 
-// EnsureDirs creates all required workspace directories if they don't
-// exist. secure/ and secure/data/ are created 0700 because they hold
-// user credentials, the JWT secret, stackllm's auth store, and the
-// SQLite session database. ai-data/ and its children are 0755 so the
-// orchestrator can read the SOUL/USER/MEMORY context files and write
-// daily memory rolls.
+// EnsureDirs creates all required workspace directories if they
+// don't exist. secure/ and secure/data/ are 0700 because they hold
+// the DB, encryption keys, JWT secret, stackllm auth file. ai-data/
+// and children are 0755 so the orchestrator can read SOUL/USER/MEMORY
+// and write memory rolls.
 func (w WorkspaceConfig) EnsureDirs() error {
 	tight := []string{w.SecureDir(), w.DataDir()}
 	loose := []string{
@@ -130,85 +112,32 @@ func (w WorkspaceConfig) EnsureDirs() error {
 	return nil
 }
 
-// DiscordConfig configures Discord integration
-type DiscordConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	AllowedUsers []string `yaml:"allowed_users"` // User IDs allowed to DM
-	AllowedChans []string `yaml:"allowed_chans"` // Channel IDs allowed
-}
-
-// TelegramConfig configures Telegram bot integration
-type TelegramConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	AllowedUsers []string `yaml:"allowed_users"` // User IDs or usernames allowed
-}
-
-// SlackConfig configures Slack bot integration (Socket Mode)
-type SlackConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	AllowedUsers []string `yaml:"allowed_users"` // Slack user IDs allowed
-	AllowedChans []string `yaml:"allowed_chans"` // Slack channel IDs allowed
-}
-
-// StarlarkConfig configures Starlark script limits
-type StarlarkConfig struct {
-	Enabled        bool  `yaml:"enabled"`          // Enable Starlark scripts
-	MaxExecutionMs int64 `yaml:"max_execution_ms"` // Max script runtime
-	MaxMemoryMB    int   `yaml:"max_memory_mb"`    // Max memory usage
-}
-
-// Default returns a config with sensible defaults
+// Default returns a config with sensible bootstrap defaults. Runtime
+// settings (logging level, starlark limits, etc.) are not covered
+// here — the DB-backed stores own their own defaults.
 func Default() *Config {
 	return &Config{
-		Engine: EngineConfig{},
-		Workspace: WorkspaceConfig{
-			Path: "/workspace",
-		},
-		Discord: DiscordConfig{
-			Enabled: true,
-		},
-		Telegram: TelegramConfig{Enabled: false},
-		Slack:    SlackConfig{Enabled: false},
-		Starlark: StarlarkConfig{
-			Enabled:        true,
-			MaxExecutionMs: 30000, // 30 seconds
-			MaxMemoryMB:    128,
-		},
-		Logging: LoggingConfig{
-			Level: "info",
-			JSON:  false,
-		},
-		Server: ServerConfig{
-			HealthAddr: ":8081",
-			RateLimit: RateLimitConfig{
-				Rate:  10,
-				Burst: 20,
-			},
-		},
-		Admin: AdminConfig{
-			Enabled: true,
-			Bind:    "localhost:8080",
-		},
+		Engine:    EngineConfig{},
+		Workspace: WorkspaceConfig{Path: "/workspace"},
+		Admin:     AdminConfig{Enabled: true, Bind: "localhost:8080"},
 	}
 }
 
-// Load reads config from file and environment variables.
-// It first loads any .env file in the current directory, then reads
-// the YAML config file, then applies environment variable overrides.
+// Load reads config from file and environment variables. Loads any
+// .env in the current directory, reads the YAML config file, then
+// applies bootstrap env-var overrides (WORKSPACE_PATH, ADMIN_BIND).
 func Load() (*Config, error) {
-	// Load .env file (real env vars take precedence)
 	if err := LoadDotEnv(); err != nil {
 		return nil, err
 	}
 
 	cfg := Default()
 
-	// Apply workspace path override early so config file lookup uses it
+	// Apply workspace path override early so config file lookup uses it.
 	if v := os.Getenv("WORKSPACE_PATH"); v != "" {
 		cfg.Workspace.Path = v
 	}
 
-	// Try to load from file
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
 		configPath = filepath.Join(cfg.Workspace.Path, "secure", "config.yaml")
@@ -220,7 +149,6 @@ func Load() (*Config, error) {
 		}
 	}
 
-	// Override with environment variables (re-apply after config file may have changed them)
 	if v := os.Getenv("WORKSPACE_PATH"); v != "" {
 		cfg.Workspace.Path = v
 	}

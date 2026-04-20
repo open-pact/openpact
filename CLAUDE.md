@@ -47,24 +47,24 @@ Admin UI chat          → /api/engine/chat (stackllm web.ManagedHandler, SSE)  
 - **engine/** — Composes stackllm primitives into a single `Stack` (`profile.Manager`, `session.SQLiteStore`, `tools.Registry`, `web.ManagedHandler`). No interface, no HTTP hop — the agent runs in-process.
 - **orchestrator/** — Central coordinator. Builds the Stack, routes chat-provider messages through an `agent.Agent`, injects SOUL/USER/MEMORY as a system-role message, persists per-channel session IDs.
 - **mcp/** — MCP tool registry. The server object is used as a catalogue only; `engine.RegisterMCPTools` copies every registered tool into a native stackllm `tools.Registry` via a thin adapter. An optional stdio-mode server remains for future external MCP clients.
-- **admin/** — Web server for the admin UI. JWT auth, setup wizard, script/secret/schedule stores, and the mount of `stack.Handler` under `/api/engine/` so the browser can drive provider login, model selection, and SSE chat directly.
+- **admin/** — Web server for the admin UI. JWT auth, setup wizard, script store, and the mount of `stack.Handler` under `/api/engine/` so the browser can drive provider login, model selection, and SSE chat directly. Thin HTTP layer over the `internal/storage/*` packages.
+- **storage/** — Package-per-domain persistence over the shared SQLite DB: `users`, `approvals`, `secrets` (AES-256-GCM encrypted at rest), `chatproviders`, `schedules`, `kv` (scoped scalar settings), `calendars`, `channels`. Every OpenPact row lives under the `op_` prefix; stackllm owns `stackllm_*` in the same file.
 - **starlark/** — Sandboxed Starlark script execution with built-in modules (http, json, time, secrets). Secrets are injected at runtime and redacted from output before returning to the AI.
-- **config/** — YAML + env var loader. The `engine:` block now has just a single optional `db_path` override; all LLM credentials and the default model live in stackllm's own stores under `secure/data/`.
+- **config/** — Bootstrap-only YAML loader. The file now carries `workspace.path`, `engine.db_path`, `admin.bind`, and `admin.allowlist` — nothing else. Every runtime-mutable setting (logging level, rate limit, Starlark limits, calendars, vault, GitHub, provider configs) lives in op_* tables and is edited through the admin UI.
 - **context/** — Loads SOUL.md, USER.md, MEMORY.md from `ai-data/` for AI context injection.
 - **chat/** — Abstract chat-provider interface (`ChatProvider`) shared by the Discord/Slack/Telegram adapters.
 - **scheduler/** — Cron-based Starlark and agent job runner. `RunAgent` on the orchestrator is the agent-job entrypoint.
 
-**Three entry points in `cmd/`:**
-- `cmd/openpact/` — Main binary (`openpact start` runs orchestrator + admin UI + engine stack).
-- `cmd/admin/` — Standalone admin server (dev convenience — spins up a minimal stack with workspace + memory tools only).
+**Two entry points in `cmd/`:**
+- `cmd/openpact/` — Main binary (`openpact start` runs orchestrator + admin UI + engine stack). This is the only user-facing binary; disable chat providers via the admin UI rather than running a different binary for UI-only development.
 - `cmd/mcp-server/` — Standalone stdio MCP server for external clients that want direct access to the tool registry.
 
 **Admin UI (`admin-ui/`):** Vue 3 + Naive UI. Built with Vite, embedded in the Go binary via `//go:embed`. Key views:
 - `/engine` (EngineView) — provider login + default-model picker. Drives `/api/engine/*`.
 - `/sessions` (SessionsView) — admin chat over `POST /api/engine/chat` SSE, laid out per the YummyAdmin Chat/* components.
-- `/settings/advanced` (AdvancedSettingsView) — logging, rate limiter, health address, Starlark limits. Backed by `/api/config/advanced`.
-- `/integrations` (IntegrationsView) — calendar feeds + Obsidian vault. Backed by `/api/config/integrations`.
-- `/secrets` — Starlark secret store + read-only view of authenticated LLM providers.
+- `/settings/advanced` (AdvancedSettingsView) — logging, rate limiter, health address, Starlark limits. Backed by `/api/config/advanced` → `op_kv` scope=advanced_settings. Edits take effect after restart; the logger / rate limiter / health server read these values once at boot.
+- `/integrations` (IntegrationsView) — calendar feeds (own table), Obsidian vault, GitHub toggle. Backed by `/api/config/integrations` → `op_kv` + `op_calendars`. GitHub token lives in `op_secrets` under name `GITHUB_TOKEN` (set via the Secrets page or `GITHUB_TOKEN` env var fallback).
+- `/secrets` — Starlark secret store (AES-256-GCM encrypted at rest) + read-only view of authenticated LLM providers.
 - Setup wizard (`/setup`) — 3 steps: account → profile → provider login + default model.
 
 ## Engine (stackllm, in-process)
@@ -80,30 +80,25 @@ Providers available via the managed handler: OpenAI (API key or Codex-flow "Sign
 
 The orchestrator calls `stack.Manager.Default` + `LoadProviderForModel` + `agent.New(provider, WithTools(stack.Tools))` on each chat message. System prompt (SOUL/USER/MEMORY) is prepended to the message history as a `RoleSystem` message the first time a session runs. Per-session mutexes serialize concurrent messages in the same channel.
 
-Session management: each `(provider, channelID)` maps to one stackllm session UUID (persisted in `<DataDir>/channel_sessions.json`). stackllm's SQLite store owns the message history; the admin UI can interact with any session via `GET /api/engine/sessions/{id}`.
+Session management: each `(provider, channelID)` maps to one stackllm session UUID (persisted in `op_channel_sessions`). stackllm's SQLite store owns the message history; the admin UI can interact with any session via `GET /api/engine/sessions/{id}`.
 
 ## Workspace Directory Structure
 
-The workspace uses a security-first split between system and AI data:
+The workspace uses a security-first split between system and AI data. Virtually all runtime state has moved into SQLite (shared with stackllm's session tables) — only the DB file, encryption keys, and stackllm's own auth/config files remain on disk under `secure/data/`.
 
 ```
 /workspace/
 ├── secure/                     # SYSTEM-ONLY — AI has ZERO access
-│   ├── config.yaml             # Bootstrap config (engine.db_path, admin bind, Starlark limits)
+│   ├── config.yaml             # Bootstrap only: workspace.path, engine.db_path,
+│   │                           #                 admin.bind, admin.allowlist.
+│   │                           # Anything editable via the admin UI lives in
+│   │                           # the database, not here.
 │   └── data/                   # All system state
-│       ├── jwt_secret
-│       ├── users.json
-│       ├── approvals.json
-│       ├── secrets.json        # Starlark secrets (separate from LLM credentials)
-│       ├── chat_providers.json
-│       ├── channel_sessions.json
-│       ├── channel_modes.json
-│       ├── setup_state.json
-│       ├── advanced_settings.json
-│       ├── integrations.json
-│       ├── stackllm_auth.json  # LLM provider tokens (OpenAI/Gemini/Copilot/Ollama)
-│       ├── stackllm_config.json # Default model + recent models
-│       └── stackllm.db         # Conversation history (pure-Go SQLite)
+│       ├── jwt_secret          # JWT signing key
+│       ├── data_encryption_key # AES-256 key for op_secrets (separate rotation)
+│       ├── stackllm_auth.json  # LLM provider tokens (file-based by stackllm)
+│       ├── stackllm_config.json # Default model + recent models (file-based)
+│       └── stackllm.db         # Shared SQLite: stackllm_* and op_* tables
 ├── ai-data/                    # AI-ACCESSIBLE — MCP tools scope here
 │   ├── SOUL.md
 │   ├── USER.md
@@ -141,14 +136,31 @@ This has been a repeated source of bugs. Always check both methods when adding o
 
 ## Configuration
 
-`secure/config.yaml` is the bootstrap file. LLM provider credentials and the default model live in stackllm's own stores (`stackllm_auth.json` + `stackllm_config.json` under `secure/data/`) and are managed through the admin UI at `/engine`. Advanced knobs (logging, rate limit, Starlark limits) are in `advanced_settings.json` via `/settings/advanced`; integrations (calendars, vault) in `integrations.json` via `/integrations`.
+`secure/config.yaml` is the bootstrap file. It carries only `workspace.path`, `engine.db_path`, `admin.bind`, and `admin.allowlist`. Every other setting — logging, rate limit, health address, Starlark limits, calendars, vault, GitHub, chat-provider configs — lives in SQLite and is edited through the admin UI.
 
 Key env vars (bootstrap only):
 - `WORKSPACE_PATH` — workspace root (default `/workspace`).
 - `CONFIG_PATH` — path to `config.yaml` (default `<workspace>/secure/config.yaml`).
 - `ADMIN_BIND` — admin UI bind address (default from config.yaml).
-- `DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN` — chat-provider tokens (also settable via admin UI).
-- `GITHUB_TOKEN` — GitHub MCP tool auth.
+- `DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN` — fallbacks if tokens aren't set via the admin UI; the DB wins when both are present.
+- `GITHUB_TOKEN` — fallback for the GitHub MCP tool token; the `GITHUB_TOKEN` row in `op_secrets` wins when both are present.
+
+## Database
+
+The shared SQLite file (`<workspace>/secure/data/stackllm.db`, override with `engine.db_path`) holds both stackllm's session tables and OpenPact's runtime state. Naming: stackllm owns `stackllm_*`, OpenPact owns `op_*`. Tables:
+
+- `op_users` — admin accounts (bcrypt hashes).
+- `op_approvals` — script approval metadata, keyed on filename.
+- `op_secrets` — Starlark-accessible secrets, AES-256-GCM ciphertext under the `data_encryption_key`.
+- `op_chat_providers` — Discord/Slack/Telegram enablement, allowed users/channels, tokens.
+- `op_schedules` — cron schedules (script + agent jobs), last-run outcomes.
+- `op_kv` — scoped scalar settings (advanced_settings.*, integrations.vault/github, setup_state.*).
+- `op_calendars` — ordered list of calendar feed records.
+- `op_channel_sessions` — (provider, channel_id) → stackllm session UUID.
+- `op_channel_modes` — (provider, channel_id) → detail mode.
+- `op_schema_version` — OpenPact schema migration tracker (independent of stackllm's).
+
+Migrations run automatically on boot (`internal/storage/migrate.Run`). The database file is chmodded 0600 after open. Stale JSON files from the pre-migration layout are removed best-effort on first boot after upgrade.
 
 ## Admin UI Theme Reference — MANDATORY RULES
 

@@ -17,43 +17,32 @@ func TestDefault(t *testing.T) {
 		t.Errorf("expected default workspace '/workspace', got '%s'", cfg.Workspace.Path)
 	}
 
-	if !cfg.Discord.Enabled {
-		t.Error("expected Discord to be enabled by default")
-	}
-
-	if cfg.Starlark.MaxExecutionMs != 30000 {
-		t.Errorf("expected Starlark max execution 30000ms, got %d", cfg.Starlark.MaxExecutionMs)
-	}
-
-	if cfg.Starlark.MaxMemoryMB != 128 {
-		t.Errorf("expected Starlark max memory 128MB, got %d", cfg.Starlark.MaxMemoryMB)
+	if !cfg.Admin.Enabled {
+		t.Error("expected Admin to be enabled by default")
 	}
 }
 
 func TestLoadFromFile(t *testing.T) {
-	// Create temp directory
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
-	// Write test config — the new engine block only has db_path.
+	// YAML now only carries bootstrap fields. Runtime settings
+	// (logging/ratelimit/starlark/integrations) live in the DB and are
+	// not accepted from YAML.
 	configContent := `
 engine:
   db_path: /custom/path/sessions.db
 workspace:
   path: /custom/workspace
-discord:
-  enabled: false
-  allowed_users:
-    - "123456"
-starlark:
-  max_execution_ms: 60000
-  max_memory_mb: 256
+admin:
+  bind: 127.0.0.1:9999
+  allowlist:
+    - trusted.star
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("failed to write test config: %v", err)
 	}
 
-	// Set env var to point to our config
 	os.Setenv("CONFIG_PATH", configPath)
 	defer os.Unsetenv("CONFIG_PATH")
 
@@ -70,25 +59,16 @@ starlark:
 		t.Errorf("expected workspace '/custom/workspace', got '%s'", cfg.Workspace.Path)
 	}
 
-	if cfg.Discord.Enabled {
-		t.Error("expected Discord to be disabled")
+	if cfg.Admin.Bind != "127.0.0.1:9999" {
+		t.Errorf("expected admin bind '127.0.0.1:9999', got '%s'", cfg.Admin.Bind)
 	}
 
-	if len(cfg.Discord.AllowedUsers) != 1 || cfg.Discord.AllowedUsers[0] != "123456" {
-		t.Errorf("expected allowed_users ['123456'], got %v", cfg.Discord.AllowedUsers)
-	}
-
-	if cfg.Starlark.MaxExecutionMs != 60000 {
-		t.Errorf("expected max_execution_ms 60000, got %d", cfg.Starlark.MaxExecutionMs)
-	}
-
-	if cfg.Starlark.MaxMemoryMB != 256 {
-		t.Errorf("expected max_memory_mb 256, got %d", cfg.Starlark.MaxMemoryMB)
+	if len(cfg.Admin.Allowlist) != 1 || cfg.Admin.Allowlist[0] != "trusted.star" {
+		t.Errorf("expected allowlist [trusted.star], got %v", cfg.Admin.Allowlist)
 	}
 }
 
 func TestLoadEnvOverride(t *testing.T) {
-	// Create minimal config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte("admin:\n  enabled: true"), 0644); err != nil {
@@ -118,17 +98,14 @@ func TestEnsureDirs(t *testing.T) {
 
 	w := WorkspaceConfig{Path: workspace}
 
-	// Directories should not exist yet
 	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
 		t.Fatal("workspace should not exist yet")
 	}
 
-	// EnsureDirs should create all directories
 	if err := w.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs failed: %v", err)
 	}
 
-	// Verify all directories were created
 	expectedDirs := []string{
 		workspace,
 		w.SecureDir(),
@@ -159,7 +136,6 @@ func TestLoadMissingFile(t *testing.T) {
 	os.Setenv("CONFIG_PATH", "/nonexistent/config.yaml")
 	defer os.Unsetenv("CONFIG_PATH")
 
-	// Should not error, just use defaults.
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("expected no error for missing config file, got: %v", err)

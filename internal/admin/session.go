@@ -3,6 +3,8 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/open-pact/openpact/internal/storage/users"
 )
 
 // LoginRequest represents a login request.
@@ -20,13 +22,13 @@ type SessionResponse struct {
 
 // SessionHandler handles authentication endpoints.
 type SessionHandler struct {
-	users        *UserStore
+	users        *users.Store
 	jwt          *JWTManager
 	secureCookie bool
 }
 
 // NewSessionHandler creates a new session handler.
-func NewSessionHandler(users *UserStore, jwt *JWTManager, secureCookie bool) *SessionHandler {
+func NewSessionHandler(users *users.Store, jwt *JWTManager, secureCookie bool) *SessionHandler {
 	return &SessionHandler{
 		users:        users,
 		jwt:          jwt,
@@ -49,7 +51,7 @@ func (h *SessionHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate credentials
-	_, err := h.users.Validate(req.Username, req.Password)
+	_, err := h.users.Validate(r.Context(), req.Username, req.Password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]string{
