@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -65,6 +66,10 @@ func main() {
 	defer stack.Close()
 	server.SetEngineHandler(stack.Handler)
 	server.SetSessionStore(stack.Sessions)
+	server.SetDefaultModelCheck(func() bool {
+		_, ok, err := stack.Manager.Default(context.Background())
+		return err == nil && ok
+	})
 
 	handler, err := server.HandlerWithUI()
 	if err != nil {

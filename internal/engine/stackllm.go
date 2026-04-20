@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/open-pact/openpact/internal/mcp"
+	"github.com/stack-bound/stackllm/agent"
 	"github.com/stack-bound/stackllm/auth"
 	"github.com/stack-bound/stackllm/config"
 	"github.com/stack-bound/stackllm/profile"
@@ -119,17 +120,17 @@ func New(cfg Config) (*Stack, error) {
 		Tools:    registry,
 	}
 
-	// web.ManagedHandler builds a fresh agent per request, so agent-level
+	// web.ManagedHandler builds a fresh agent per request; agent-level
 	// options (tools, max steps) live on the handler and follow every
-	// call. It does not carry system prompts — orchestrator paths
-	// prepend their own system message when building agents for bot
-	// turns (see orchestrator.handleChatMessage).
+	// call. Admin-UI chat gets the same tool registry the
+	// Discord/Slack/Telegram paths do — the reviewer of PR #stackllm
+	// correctly flagged that shipping admin chat tool-less diverges
+	// from the spec and breaks the "detail modes render tool-use
+	// blocks" verification step. Orchestrator paths still prepend
+	// their own SOUL/USER/MEMORY system message per turn.
 	s.Handler = web.NewManagedHandler(mgr, sessionStore,
 		web.WithAgentOptions(
-			// A more generous default than stackllm's 20 — tool-heavy
-			// conversations (fetch → parse → write → follow-up) run out
-			// of steps quickly on 20.
-			// agent.WithMaxSteps(40),
+			agent.WithTools(registry),
 		),
 	)
 

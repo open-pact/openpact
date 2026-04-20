@@ -3,8 +3,6 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -91,7 +89,7 @@ func NewServer(config Config) (*Server, error) {
 		users:            users,
 		scripts:          scripts,
 		jwt:              jwt,
-		setupHandler:     NewSetupHandler(users, config.DataDir, config.AIDataDir),
+		setupHandler:     NewSetupHandler(users, config.DataDir, config.AIDataDir, jwt, secureCookie, nil),
 		sessionHandler:   NewSessionHandler(users, jwt, secureCookie),
 		scriptHandlers:   NewScriptHandlers(scripts),
 		secretHandlers:   NewSecretHandlers(secretStore, nil),
@@ -125,6 +123,16 @@ func (s *Server) SetSessionStore(store session.SessionStore) {
 	s.sessionStore = store
 }
 
+// SetDefaultModelCheck wires the predicate the setup handler uses to
+// gate POST /api/setup/provider. The admin package deliberately does
+// not import stackllm's profile package, so the engine wiring in
+// cmd/openpact passes this bool-returning closure in at startup.
+func (s *Server) SetDefaultModelCheck(fn func() bool) {
+	if s.setupHandler != nil {
+		s.setupHandler.defaultModelSet = fn
+	}
+}
+
 // Handler returns the HTTP handler for the admin API (no SPA).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -139,10 +147,12 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	// Version endpoint (no auth required)
 	mux.HandleFunc("/api/version", handleVersion)
 
-	// Setup endpoints (no auth required, but blocked after setup complete)
+	// Setup endpoints. /api/setup runs unauthenticated (no user exists
+	// yet) and issues a refresh cookie; the remaining wizard steps
+	// require auth, same as every other admin endpoint.
 	mux.HandleFunc("/api/setup/status", s.setupHandler.Status)
-	mux.HandleFunc("/api/setup/profile", s.setupHandler.Profile)
-	mux.HandleFunc("/api/setup/provider", s.setupHandler.Provider)
+	mux.HandleFunc("/api/setup/profile", s.withAuth(s.setupHandler.Profile))
+	mux.HandleFunc("/api/setup/provider", s.withAuth(s.setupHandler.Provider))
 	mux.HandleFunc("/api/setup", s.setupHandler.Setup)
 
 	// Auth endpoints (no auth required)
@@ -175,55 +185,22 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	// auth-gated — the list is post-setup only, never public.
 	mux.HandleFunc("/api/engine/sessions", s.withAuth(s.engineSessions.List))
 
-	// Stackllm ManagedHandler mount. After setup is complete the
-	// endpoints require a bearer token; during the provider-login step
-	// of setup the user has no token yet, so the setup middleware
-	// allows the path through publicly. See HandlerWithUI.
+	// Stackllm ManagedHandler mount. Always requires a bearer token —
+	// even during the setup wizard, because POST /api/setup now issues
+	// a refresh cookie and the wizard calls /api/session to pick up an
+	// access token before step 3. The setup middleware is what gates
+	// the path-level 503, not authentication.
 	//
 	// IMPORTANT (dual-handler rule, CLAUDE.md): this mount must appear
 	// in both Handler() and HandlerWithUI(). registerAPIRoutes is the
 	// single source of truth that both call.
-	mux.HandleFunc("/api/engine/", s.withEngineAuth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/engine/", s.withAuth(func(w http.ResponseWriter, r *http.Request) {
 		if s.engineHandler == nil {
 			http.Error(w, `{"error":"engine handler not wired"}`, http.StatusServiceUnavailable)
 			return
 		}
 		http.StripPrefix("/api/engine", s.engineHandler).ServeHTTP(w, r)
 	}))
-}
-
-// withEngineAuth wraps the /api/engine/ mount. When setup is fully
-// complete (users exist AND the provider step has been marked done) the
-// user is expected to have a bearer token and we fall through to the
-// standard withAuth. Before that — specifically during step 3 of the
-// setup wizard — the handler is publicly reachable, so the user can
-// sign in to their first provider without a token.
-func (s *Server) withEngineAuth(handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.providerSetupComplete() {
-			s.withAuth(handler)(w, r)
-			return
-		}
-		handler(w, r)
-	}
-}
-
-// providerSetupComplete reports whether the provider step of setup has
-// been finished. Any read error is treated as "incomplete" so we fail
-// open for the setup flow rather than locking the user out.
-func (s *Server) providerSetupComplete() bool {
-	if !s.users.HasUsers() {
-		return false
-	}
-	data, err := os.ReadFile(filepath.Join(s.config.DataDir, "setup_state.json"))
-	if err != nil {
-		return false
-	}
-	var state SetupState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return false
-	}
-	return state.ProviderComplete
 }
 
 // withAuth wraps a handler with authentication middleware.

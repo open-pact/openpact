@@ -13,7 +13,7 @@ import (
 func TestSetupHandler_Status(t *testing.T) {
 	tmpDir := t.TempDir()
 	users, _ := NewUserStore(tmpDir)
-	handler := NewSetupHandler(users, tmpDir, tmpDir)
+	handler := newTestSetupHandler(t, users, tmpDir)
 
 	t.Run("setup required when no users", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/setup/status", nil)
@@ -82,7 +82,7 @@ func TestSetupHandler_Setup(t *testing.T) {
 	t.Run("successful setup", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"username": "admin", "password": "mysecurepassword16", "confirm_password": "mysecurepassword16"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
@@ -111,7 +111,7 @@ func TestSetupHandler_Setup(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
 		users.Create("existing", "password1234567890")
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"username": "admin", "password": "mysecurepassword16", "confirm_password": "mysecurepassword16"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
@@ -127,7 +127,7 @@ func TestSetupHandler_Setup(t *testing.T) {
 	t.Run("password mismatch", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"username": "admin", "password": "mysecurepassword16", "confirm_password": "differentpassword"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
@@ -150,7 +150,7 @@ func TestSetupHandler_Setup(t *testing.T) {
 	t.Run("weak password", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"username": "admin", "password": "weak", "confirm_password": "weak"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
@@ -166,7 +166,7 @@ func TestSetupHandler_Setup(t *testing.T) {
 	t.Run("empty username", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"username": "", "password": "mysecurepassword16", "confirm_password": "mysecurepassword16"}`
 		req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
@@ -185,7 +185,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
 		users.Create("admin", "password1234567890")
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "Matt", "timezone": "Europe/London"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
@@ -245,7 +245,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 	t.Run("requires account first", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "Matt", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
@@ -262,7 +262,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
 		users.Create("admin", "password1234567890")
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		// Mark profile as complete
 		state := SetupState{ProfileComplete: true}
@@ -284,7 +284,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
 		users.Create("admin", "password1234567890")
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"agent_name": "Atlas", "personality": "nonexistent", "user_name": "Matt", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
@@ -301,7 +301,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
 		users.Create("admin", "password1234567890")
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"agent_name": "", "personality": "friendly", "user_name": "Matt", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
@@ -318,7 +318,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
 		users.Create("admin", "password1234567890")
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "", "timezone": "UTC"}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
@@ -335,7 +335,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
 		users.Create("admin", "password1234567890")
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		body := `{"agent_name": "Atlas", "personality": "calm", "user_name": "Matt", "timezone": ""}`
 		req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
@@ -356,7 +356,7 @@ func TestSetupHandler_Profile(t *testing.T) {
 	t.Run("rejects GET method", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		users, _ := NewUserStore(tmpDir)
-		handler := NewSetupHandler(users, tmpDir, tmpDir)
+		handler := newTestSetupHandler(t, users, tmpDir)
 
 		req := httptest.NewRequest("GET", "/api/setup/profile", nil)
 		rec := httptest.NewRecorder()

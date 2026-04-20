@@ -30,14 +30,12 @@ func setupTestServer(t *testing.T) *Server {
 	return server
 }
 
-// completeSetup runs account creation, profile setup, and marks the
-// provider step complete so later assertions see a fully-configured
-// install. The provider step is a no-op server-side when there's no
-// stackllm stack wired; tests rely on the state file being written.
-func completeSetup(t *testing.T, handler http.Handler) {
+// createAccountAndGetToken runs step 1 of the setup wizard and
+// exchanges the resulting refresh cookie for an access token. Returns
+// the bearer token so subsequent setup/admin calls can authenticate.
+func createAccountAndGetToken(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
-	// Step 1: Create account
 	body := `{"username": "admin", "password": "verysecurepassword1", "confirm_password": "verysecurepassword1"}`
 	req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
@@ -46,10 +44,48 @@ func completeSetup(t *testing.T, handler http.Handler) {
 		t.Fatalf("Account setup failed: %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Step 2: Complete profile
-	body = `{"agent_name": "TestBot", "personality": "balanced", "user_name": "Tester", "timezone": "UTC"}`
-	req = httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
+	var refresh *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "refresh" {
+			refresh = c
+			break
+		}
+	}
+	if refresh == nil {
+		t.Fatal("POST /api/setup did not set a refresh cookie")
+	}
+
+	req = httptest.NewRequest("GET", "/api/session", nil)
+	req.AddCookie(refresh)
 	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/api/session exchange failed: %d: %s", rec.Code, rec.Body.String())
+	}
+	var sess SessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&sess); err != nil {
+		t.Fatalf("decode session response: %v", err)
+	}
+	if sess.AccessToken == "" {
+		t.Fatal("session response had empty access_token")
+	}
+	return sess.AccessToken
+}
+
+// completeSetup runs account creation, profile setup, and marks the
+// provider step complete so later assertions see a fully-configured
+// install. Returns the bearer token for further authenticated calls.
+func completeSetup(t *testing.T, handler http.Handler) string {
+	t.Helper()
+
+	token := createAccountAndGetToken(t, handler)
+	auth := "Bearer " + token
+
+	// Step 2: Complete profile
+	body := `{"agent_name": "TestBot", "personality": "balanced", "user_name": "Tester", "timezone": "UTC"}`
+	req := httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", auth)
+	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Profile setup failed: %d: %s", rec.Code, rec.Body.String())
@@ -57,11 +93,13 @@ func completeSetup(t *testing.T, handler http.Handler) {
 
 	// Step 3: Mark LLM provider step complete
 	req = httptest.NewRequest("POST", "/api/setup/provider", nil)
+	req.Header.Set("Authorization", auth)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Provider setup failed: %d: %s", rec.Code, rec.Body.String())
 	}
+	return token
 }
 
 func TestServer_SetupFlow(t *testing.T) {
@@ -116,15 +154,14 @@ func TestServer_SetupFlow_ProfileStep(t *testing.T) {
 	server := setupTestServer(t)
 	handler := server.Handler()
 
-	// Create account only
-	body := `{"username": "admin", "password": "verysecurepassword1", "confirm_password": "verysecurepassword1"}`
-	req := httptest.NewRequest("POST", "/api/setup", bytes.NewBufferString(body))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	// Create account and pick up the access token minted by the
+	// setup endpoint so the remaining wizard steps authenticate.
+	token := createAccountAndGetToken(t, handler)
+	auth := "Bearer " + token
 
 	// Status should show profile step
-	req = httptest.NewRequest("GET", "/api/setup/status", nil)
-	rec = httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/setup/status", nil)
+	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	var statusResp SetupStatusResponse
@@ -138,6 +175,7 @@ func TestServer_SetupFlow_ProfileStep(t *testing.T) {
 
 	// Non-setup endpoints should still be blocked
 	req = httptest.NewRequest("GET", "/api/scripts", nil)
+	req.Header.Set("Authorization", auth)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -146,8 +184,9 @@ func TestServer_SetupFlow_ProfileStep(t *testing.T) {
 	}
 
 	// Verify SOUL.md is written after profile completion
-	body = `{"agent_name": "Atlas", "personality": "friendly", "user_name": "Matt", "timezone": "Europe/London"}`
+	body := `{"agent_name": "Atlas", "personality": "friendly", "user_name": "Matt", "timezone": "Europe/London"}`
 	req = httptest.NewRequest("POST", "/api/setup/profile", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", auth)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

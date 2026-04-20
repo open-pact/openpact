@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,17 +45,29 @@ type SetupState struct {
 
 // SetupHandler handles first-run setup.
 type SetupHandler struct {
-	users     *UserStore
-	dataDir   string
-	aiDataDir string
+	users        *UserStore
+	dataDir      string
+	aiDataDir    string
+	jwt          *JWTManager
+	secureCookie bool
+	// defaultModelSet is injected rather than imported from engine/profile
+	// to keep the admin package free of stackllm types. Returns true if
+	// the profile manager has a persisted default model.
+	defaultModelSet func() bool
 }
 
-// NewSetupHandler creates a new setup handler.
-func NewSetupHandler(users *UserStore, dataDir, aiDataDir string) *SetupHandler {
+// NewSetupHandler creates a new setup handler. jwt and secureCookie are
+// required so POST /api/setup can issue a refresh cookie on success —
+// the remaining setup steps then run authenticated just like any other
+// admin endpoint, so /api/engine/* never has to be publicly reachable.
+func NewSetupHandler(users *UserStore, dataDir, aiDataDir string, jwt *JWTManager, secureCookie bool, defaultModelSet func() bool) *SetupHandler {
 	return &SetupHandler{
-		users:     users,
-		dataDir:   dataDir,
-		aiDataDir: aiDataDir,
+		users:           users,
+		dataDir:         dataDir,
+		aiDataDir:       aiDataDir,
+		jwt:             jwt,
+		secureCookie:    secureCookie,
+		defaultModelSet: defaultModelSet,
 	}
 }
 
@@ -133,6 +146,19 @@ func (h *SetupHandler) Provider(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{
 			"error":   "profile_required",
 			"message": "Complete the profile step first",
+		})
+		return
+	}
+
+	// Server-side gate: a default model must actually be set before we
+	// mark the wizard complete. Previously the handler trusted the
+	// frontend's own check, which meant a buggy or malicious client
+	// could flip the flag with no provider ever authenticated.
+	if h.defaultModelSet != nil && !h.defaultModelSet() {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "default_model_required",
+			"message": "Authenticate a provider and pick a default model before finishing setup",
 		})
 		return
 	}
@@ -220,6 +246,21 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 			"message": "Failed to create user",
 		})
 		return
+	}
+
+	// Issue the refresh cookie now so the wizard's subsequent calls
+	// (profile + provider login + default model pick) run
+	// authenticated. Previously the wizard ran entirely
+	// unauthenticated and the setup middleware whitelisted
+	// /api/engine/* to compensate — that exposed /chat, /sessions/*
+	// and /logout to anyone who could reach the bind address during
+	// the setup window. Issuing a cookie here closes that hole.
+	if h.jwt != nil {
+		if refreshToken, _, err := h.jwt.CreateRefreshToken(req.Username); err == nil {
+			SetRefreshCookie(w, refreshToken, h.secureCookie)
+		} else {
+			log.Printf("Warning: failed to mint refresh token on setup: %v", err)
+		}
 	}
 
 	json.NewEncoder(w).Encode(SetupResponse{
@@ -361,13 +402,19 @@ func (h *SetupHandler) Profile(w http.ResponseWriter, r *http.Request) {
 func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Always allow setup endpoints, static assets, and the
-			// stackllm engine API (the provider-login step of setup
-			// hits it before the user has any auth token).
+			// Always allow setup endpoints, session/auth endpoints
+			// (so the wizard can refresh its access token after
+			// creating the account), static assets, and a narrow
+			// subset of /api/engine/* that step 3 of the wizard
+			// genuinely needs. All whitelisted /api/engine/* paths
+			// are still auth-gated by withAuth — the whitelist is
+			// about the setup 503, not about authentication.
 			if r.URL.Path == "/api/setup" || r.URL.Path == "/api/setup/status" ||
 				r.URL.Path == "/api/setup/profile" || r.URL.Path == "/api/setup/provider" ||
+				r.URL.Path == "/api/session" || r.URL.Path == "/api/auth/login" ||
+				r.URL.Path == "/api/auth/logout" ||
 				r.URL.Path == "/api/version" ||
-				strings.HasPrefix(r.URL.Path, "/api/engine/") ||
+				isSetupEngineEndpoint(r.URL.Path) ||
 				r.URL.Path == "/setup" || r.URL.Path == "/" ||
 				strings.HasPrefix(r.URL.Path, "/assets/") {
 				next.ServeHTTP(w, r)
@@ -423,4 +470,35 @@ func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler)
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// isSetupEngineEndpoint reports whether the given path is one of the
+// narrow set of /api/engine/* endpoints step 3 of the setup wizard
+// needs — provider list, login/oauth/status, model list, default
+// model get/set. Notably excluded: /chat, /sessions/*, and the
+// per-provider logout endpoint. All whitelisted paths are still
+// auth-gated by withAuth — the whitelist governs the setup 503, not
+// authentication.
+func isSetupEngineEndpoint(p string) bool {
+	const prefix = "/api/engine"
+	if !strings.HasPrefix(p, prefix) {
+		return false
+	}
+	q := strings.TrimPrefix(p, prefix)
+	switch {
+	case q == "/providers":
+		return true
+	case strings.HasPrefix(q, "/providers/"):
+		// Only the login / status / oauth sub-paths.
+		// /providers/{name}/logout is intentionally NOT whitelisted.
+		return strings.HasSuffix(q, "/login") ||
+			strings.HasSuffix(q, "/oauth/login") ||
+			strings.HasSuffix(q, "/oauth/status") ||
+			strings.HasSuffix(q, "/status")
+	case q == "/models" || strings.HasPrefix(q, "/models/"):
+		return true
+	case q == "/default":
+		return true
+	}
+	return false
 }

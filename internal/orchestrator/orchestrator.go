@@ -38,7 +38,6 @@ type Orchestrator struct {
 	stack         *engine.Stack
 	scriptStore   *admin.ScriptStore // Script approval store (optional)
 	providerStore *admin.ProviderStore
-	modelStore    *admin.ModelPreferenceStore
 	scheduler     *scheduler.Scheduler
 
 	// Dynamic provider management
@@ -234,14 +233,6 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		stack.SetSystemPrompt(systemPrompt)
 	}
 
-	// Initialize model preference store. Unlike the old OpenCode setup,
-	// the default model now lives in stackllm's own config store — this
-	// legacy file exists only to seed stackllm's store on first run if
-	// the admin previously picked a model. The admin UI writes directly
-	// to stackllm going forward.
-	o.modelStore = admin.NewModelPreferenceStore(cfg.Workspace.DataDir())
-	o.seedLegacyModelPreference()
-
 	return o, nil
 }
 
@@ -250,29 +241,6 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 // advanced-settings views.
 func (o *Orchestrator) Stack() *engine.Stack {
 	return o.stack
-}
-
-// seedLegacyModelPreference copies a pre-migration model preference into
-// stackllm's config store if nothing is set yet. Best-effort — failure is
-// logged and ignored.
-func (o *Orchestrator) seedLegacyModelPreference() {
-	if o.stack == nil || o.modelStore == nil {
-		return
-	}
-	ctx := context.Background()
-	if _, ok, _ := o.stack.Manager.Default(ctx); ok {
-		return
-	}
-	pref, err := o.modelStore.Get()
-	if err != nil || pref == nil {
-		return
-	}
-	info := profile.ModelInfo{Provider: pref.Provider, Model: pref.Model}
-	if err := o.stack.Manager.SetDefaultModel(info); err != nil {
-		log.Printf("Warning: failed to seed default model: %v", err)
-		return
-	}
-	log.Printf("Seeded stackllm default model from legacy preference: %s/%s", pref.Provider, pref.Model)
 }
 
 // StartProvider starts a single chat provider by name using config from the store.
@@ -656,24 +624,59 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 		return nil, fmt.Errorf("agent run: %w", err)
 	}
 
-	// Accumulate streamed content. BlockDelta events carry incremental
-	// text; BlockEnd events carry the final block. We prefer the final
-	// block when available.
+	result, finalMessages, streamErr := accumulateChatResponse(events, wantThinking, wantTools)
+	if len(finalMessages) > 0 {
+		sess.Messages = finalMessages
+	}
+	if streamErr != nil {
+		if persistErr := o.stack.Sessions.Save(context.Background(), sess); persistErr != nil {
+			log.Printf("Warning: failed to save session after error: %v", persistErr)
+		}
+		return nil, streamErr
+	}
+
+	if err := o.stack.Sessions.Save(context.Background(), sess); err != nil {
+		log.Printf("Warning: failed to save session %s: %v", sessionID, err)
+	}
+	return result, nil
+}
+
+// accumulateChatResponse drains an agent event stream into a chat
+// response. A single agent turn can emit multiple text blocks around
+// tool-use ("Looking that up…" → tool_use → "Here's what I found.")
+// so completed text/thinking blocks are separated by a blank line
+// rather than replacing each other. Factored out of sendChatMessage to
+// be unit-testable — see orchestrator_accumulate_test.go.
+//
+// Return value: the assembled response, the authoritative message slice
+// the agent built (empty if the stream never emitted EventComplete or
+// EventError with messages), and any terminal error reported via
+// EventError.
+func accumulateChatResponse(events <-chan agent.Event, wantThinking, wantTools bool) (*chat.ChatResponse, []conversation.Message, error) {
 	var (
 		textBuilder     strings.Builder
 		thinkingBuilder strings.Builder
+		curText         strings.Builder
+		curThinking     strings.Builder
 		toolCalls       []chat.ToolCallInfo
+		messages        []conversation.Message
 	)
+
+	appendBlock := func(dst, cur *strings.Builder, final string) {
+		cur.Reset()
+		if dst.Len() > 0 {
+			dst.WriteString("\n\n")
+		}
+		dst.WriteString(final)
+	}
 
 	for ev := range events {
 		switch ev.Type {
 		case agent.EventBlockDelta:
-			// Use deltas only as a fallback — EventBlockEnd will overwrite
-			// if we see a full text block.
 			if ev.BlockType == conversation.BlockText {
-				textBuilder.WriteString(ev.Content)
+				curText.WriteString(ev.Content)
 			} else if ev.BlockType == conversation.BlockThinking && wantThinking {
-				thinkingBuilder.WriteString(ev.Content)
+				curThinking.WriteString(ev.Content)
 			}
 		case agent.EventBlockEnd:
 			if ev.Block == nil {
@@ -681,13 +684,10 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 			}
 			switch ev.Block.Type {
 			case conversation.BlockText:
-				// Replace accumulated deltas with the final text.
-				textBuilder.Reset()
-				textBuilder.WriteString(ev.Block.Text)
+				appendBlock(&textBuilder, &curText, ev.Block.Text)
 			case conversation.BlockThinking:
 				if wantThinking {
-					thinkingBuilder.Reset()
-					thinkingBuilder.WriteString(ev.Block.Text)
+					appendBlock(&thinkingBuilder, &curThinking, ev.Block.Text)
 				}
 			case conversation.BlockToolUse:
 				if wantTools {
@@ -698,11 +698,7 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 				}
 			}
 		case agent.EventToolResult:
-			if !wantTools {
-				continue
-			}
-			// Attach output to the most recent matching tool call.
-			if ev.ToolCall == nil {
+			if !wantTools || ev.ToolCall == nil {
 				continue
 			}
 			for i := len(toolCalls) - 1; i >= 0; i-- {
@@ -712,21 +708,22 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 				}
 			}
 		case agent.EventComplete:
-			// Persist the authoritative message slice the agent built.
-			sess.Messages = append([]conversation.Message(nil), ev.Messages...)
+			messages = append([]conversation.Message(nil), ev.Messages...)
 		case agent.EventError:
 			if len(ev.Messages) > 0 {
-				sess.Messages = append([]conversation.Message(nil), ev.Messages...)
+				messages = append([]conversation.Message(nil), ev.Messages...)
 			}
-			if persistErr := o.stack.Sessions.Save(context.Background(), sess); persistErr != nil {
-				log.Printf("Warning: failed to save session after error: %v", persistErr)
-			}
-			return nil, ev.Err
+			return nil, messages, ev.Err
 		}
 	}
 
-	if err := o.stack.Sessions.Save(context.Background(), sess); err != nil {
-		log.Printf("Warning: failed to save session %s: %v", sessionID, err)
+	// Flush any block that closed without a BlockEnd — defensive against
+	// an early stream termination leaving deltas buffered.
+	if curText.Len() > 0 {
+		appendBlock(&textBuilder, &curText, curText.String())
+	}
+	if wantThinking && curThinking.Len() > 0 {
+		appendBlock(&thinkingBuilder, &curThinking, curThinking.String())
 	}
 
 	result := &chat.ChatResponse{Text: textBuilder.String()}
@@ -736,7 +733,7 @@ func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content st
 	if wantTools && len(toolCalls) > 0 {
 		result.ToolCalls = toolCalls
 	}
-	return result, nil
+	return result, messages, nil
 }
 
 // ensureChannelSession returns the session ID for a channel, creating a
@@ -1116,15 +1113,11 @@ func (o *Orchestrator) GetDefaultModel() (string, string) {
 	return info.Provider, info.Model
 }
 
-// SetDefaultModel implements mcp.ModelLookup. It also persists a legacy
-// copy so older code paths that still read the JSON file see the choice.
+// SetDefaultModel implements mcp.ModelLookup.
 func (o *Orchestrator) SetDefaultModel(provider, model string) error {
 	info := profile.ModelInfo{Provider: provider, Model: model}
 	if err := o.stack.Manager.SetDefaultModel(info); err != nil {
 		return err
-	}
-	if err := o.modelStore.Set(provider, model); err != nil {
-		log.Printf("Warning: legacy model preference save failed: %v", err)
 	}
 	log.Printf("Default model set to %s/%s", provider, model)
 	return nil
@@ -1167,12 +1160,20 @@ func (o *Orchestrator) RunAgent(ctx context.Context, prompt string) (string, str
 		return "", "", err
 	}
 
+	// Concatenate every text block the agent emits this turn. A single
+	// turn can produce multiple text blocks around tool calls
+	// ("Looking that up…" → tool_use → "Here's what I found."). The
+	// previous implementation reset the builder on each BlockEnd,
+	// which kept only the final block — scheduled prompts that hit a
+	// tool lost their pre-tool framing text.
 	var text strings.Builder
 	for ev := range events {
 		switch ev.Type {
 		case agent.EventBlockEnd:
 			if ev.Block != nil && ev.Block.Type == conversation.BlockText {
-				text.Reset()
+				if text.Len() > 0 {
+					text.WriteString("\n\n")
+				}
 				text.WriteString(ev.Block.Text)
 			}
 		case agent.EventComplete:

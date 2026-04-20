@@ -18,9 +18,20 @@ import {
   NModal,
 } from 'naive-ui'
 import { CheckmarkCircle } from '@vicons/ionicons5'
+import { useAuth } from '../composables/useAuth'
 
 const router = useRouter()
 const message = useMessage()
+const auth = useAuth()
+
+// authedFetch adds the Bearer token to outbound requests so setup
+// steps 2 and 3 authenticate like every other admin call. POST /api/setup
+// is the one exception — no user exists yet, so it's the only
+// unauthenticated call on this page.
+function authedFetch(path, opts = {}) {
+  const headers = { ...(opts.headers || {}), ...auth.getAuthHeader() }
+  return fetch(path, { ...opts, headers, credentials: 'include' })
+}
 
 const currentStep = ref(1)
 const loading = ref(false)
@@ -144,6 +155,17 @@ onMounted(async () => {
   try {
     const response = await fetch('/api/setup/status')
     const data = await response.json()
+    if (data.setup_step === 'profile' || data.setup_step === 'provider') {
+      // A refresh cookie was minted when the account was created; if
+      // the user reloaded mid-wizard we can exchange it for an access
+      // token so steps 2 and 3 keep authenticating cleanly. If the
+      // cookie is gone (expired / cleared) the caller stays on step 1
+      // effectively — the auth-required endpoints will 401 and the
+      // user's only option is to start over.
+      if (!auth.isAuthenticated.value) {
+        await auth.refreshToken()
+      }
+    }
     if (data.setup_step === 'profile') {
       currentStep.value = 2
     } else if (data.setup_step === 'provider') {
@@ -172,6 +194,7 @@ async function handleAccountSubmit() {
     const response = await fetch('/api/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', // so the refresh cookie set by the server sticks
       body: JSON.stringify({
         username: accountForm.value.username,
         password: accountForm.value.password,
@@ -181,6 +204,14 @@ async function handleAccountSubmit() {
     const data = await response.json()
     if (!response.ok) {
       message.error(data.message || 'Setup failed')
+      return
+    }
+    // The server issued a refresh cookie — swap it for an access
+    // token so the rest of the wizard runs authenticated.
+    const ok = await auth.refreshToken()
+    if (!ok) {
+      message.error('Account created but session could not be established. Please log in manually.')
+      router.push('/login')
       return
     }
     message.success('Account created')
@@ -196,7 +227,7 @@ async function handleAccountSubmit() {
 async function handleProfileSubmit() {
   loading.value = true
   try {
-    const response = await fetch('/api/setup/profile', {
+    const response = await authedFetch('/api/setup/profile', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -225,7 +256,7 @@ async function handleProfileSubmit() {
 // -------- Step 3: provider login --------
 async function loadProviders() {
   try {
-    const response = await fetch('/api/engine/providers')
+    const response = await authedFetch('/api/engine/providers')
     if (response.ok) {
       const data = await response.json()
       providers.value = data.providers || []
@@ -235,12 +266,12 @@ async function loadProviders() {
 
 async function loadModels() {
   try {
-    const response = await fetch('/api/engine/models')
+    const response = await authedFetch('/api/engine/models')
     if (response.ok) {
       const data = await response.json()
       models.value = data.models || []
     }
-    const def = await fetch('/api/engine/default')
+    const def = await authedFetch('/api/engine/default')
     if (def.ok) {
       const d = await def.json()
       if (d.set) {
@@ -258,7 +289,7 @@ async function loginAPIKey(providerName) {
     message.warning('Enter an API key first')
     return
   }
-  const response = await fetch(`/api/engine/providers/${providerName}/login`, {
+  const response = await authedFetch(`/api/engine/providers/${providerName}/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key }),
   })
@@ -275,7 +306,7 @@ async function loginAPIKey(providerName) {
 
 async function loginOllama() {
   const url = (ollamaURL.value || '').trim() || 'http://localhost:11434'
-  const response = await fetch('/api/engine/providers/ollama/login', {
+  const response = await authedFetch('/api/engine/providers/ollama/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ base_url: url }),
   })
@@ -293,7 +324,7 @@ async function startDeviceFlow(providerName) {
   const path = providerName === 'openai'
     ? '/api/engine/providers/openai/oauth/login'
     : `/api/engine/providers/${providerName}/login`
-  const response = await fetch(path, { method: 'POST' })
+  const response = await authedFetch(path, { method: 'POST' })
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
     message.error(data.error || 'Failed to start device flow')
@@ -317,7 +348,7 @@ function startPolling(providerName) {
       ? '/api/engine/providers/openai/oauth/status'
       : `/api/engine/providers/${providerName}/status`
     try {
-      const response = await fetch(path)
+      const response = await authedFetch(path)
       if (!response.ok) return
       const data = await response.json()
       if (!deviceFlow.value) return
@@ -346,7 +377,7 @@ function cancelDeviceFlow() { stopPolling(); deviceFlow.value = null }
 async function setDefaultModel(value) {
   if (!value) return
   const info = JSON.parse(value)
-  const response = await fetch('/api/engine/default', {
+  const response = await authedFetch('/api/engine/default', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(info),
   })
@@ -360,24 +391,28 @@ async function setDefaultModel(value) {
 }
 
 async function finishSetup() {
-  // Verify a default is set server-side.
+  // Ask the backend to mark the wizard complete. The server verifies
+  // a default model is set before flipping the flag — on failure we
+  // show the server's error and stay on step 3 so the user can fix it.
+  // Previously this fetch was try/catch'd and the result ignored, so
+  // a failed call still triggered a "Setup complete" redirect.
+  let response
   try {
-    const response = await fetch('/api/engine/default')
-    if (response.ok) {
-      const d = await response.json()
-      if (!d.set) {
-        message.warning('Pick a default model before continuing')
-        return
-      }
-    }
-  } catch (e) { /* proceed */ }
-
-  // Tell the backend the provider step is done.
-  try {
-    await fetch('/api/setup/provider', { method: 'POST' })
-  } catch (e) { /* non-fatal */ }
+    response = await authedFetch('/api/setup/provider', { method: 'POST' })
+  } catch (e) {
+    message.error('Could not reach the server: ' + e.message)
+    return
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    message.error(data.message || data.error || 'Failed to finalize setup')
+    return
+  }
 
   message.success('Setup complete — please log in')
+  // Drop the refresh cookie so the user goes through the normal
+  // login path rather than silently staying signed in as admin.
+  await auth.logout()
   router.push('/login')
 }
 
