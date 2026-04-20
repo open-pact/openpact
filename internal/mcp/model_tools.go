@@ -5,13 +5,22 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/open-pact/openpact/internal/engine"
 )
+
+// ModelInfo describes an available model from a provider. It mirrors the
+// minimal shape the model_list and model_set_default tools need — the
+// orchestrator adapts stackllm's richer profile.ModelInfo to this struct
+// when implementing ModelLookup.
+type ModelInfo struct {
+	ProviderID string
+	ModelID    string
+	Context    int // Context window in tokens (0 if unknown)
+	Output     int // Output limit in tokens (0 if unknown)
+}
 
 // ModelLookup provides model listing and default model management.
 type ModelLookup interface {
-	ListModels() ([]engine.ModelInfo, error)
+	ListModels() ([]ModelInfo, error)
 	GetDefaultModel() (string, string)
 	SetDefaultModel(provider, model string) error
 }
@@ -39,7 +48,7 @@ func modelListTool(lookup ModelLookup) *Tool {
 			defaultProvider, defaultModel := lookup.GetDefaultModel()
 
 			// Group by provider
-			grouped := make(map[string][]engine.ModelInfo)
+			grouped := make(map[string][]ModelInfo)
 			for _, m := range models {
 				grouped[m.ProviderID] = append(grouped[m.ProviderID], m)
 			}
@@ -66,8 +75,11 @@ func modelListTool(lookup ModelLookup) *Tool {
 					if m.ProviderID == defaultProvider && m.ModelID == defaultModel {
 						marker = " **(default)**"
 					}
-					b.WriteString(fmt.Sprintf("- %s (context: %dk, output: %dk)%s\n",
-						m.ModelID, m.Context/1000, m.Output/1000, marker))
+					meta := ""
+					if m.Context > 0 {
+						meta = fmt.Sprintf(" (context: %dk)", m.Context/1000)
+					}
+					b.WriteString(fmt.Sprintf("- %s%s%s\n", m.ModelID, meta, marker))
 				}
 				b.WriteString("\n")
 			}
@@ -92,7 +104,7 @@ func modelSetDefaultTool(lookup ModelLookup) *Tool {
 				},
 				"provider": map[string]interface{}{
 					"type":        "string",
-					"description": "Provider ID (e.g. 'anthropic'). Optional — inferred from model match if omitted.",
+					"description": "Provider ID (e.g. 'openai', 'copilot', 'gemini', 'ollama'). Optional — inferred from model match if omitted.",
 				},
 			},
 			"required": []string{"model"},
@@ -119,15 +131,19 @@ func modelSetDefaultTool(lookup ModelLookup) *Tool {
 				return nil, fmt.Errorf("failed to set default model: %w", err)
 			}
 
-			return fmt.Sprintf("Default model set to %s/%s (context: %dk, output: %dk)",
-				match.ProviderID, match.ModelID, match.Context/1000, match.Output/1000), nil
+			suffix := ""
+			if match.Context > 0 {
+				suffix = fmt.Sprintf(" (context: %dk)", match.Context/1000)
+			}
+			return fmt.Sprintf("Default model set to %s/%s%s",
+				match.ProviderID, match.ModelID, suffix), nil
 		},
 	}
 }
 
 // fuzzyMatchModel finds a model by exact match first, then case-insensitive substring.
 // Returns an error with suggestions on ambiguous or no match.
-func fuzzyMatchModel(models []engine.ModelInfo, modelInput, providerInput string) (*engine.ModelInfo, error) {
+func fuzzyMatchModel(models []ModelInfo, modelInput, providerInput string) (*ModelInfo, error) {
 	modelLower := strings.ToLower(modelInput)
 	providerLower := strings.ToLower(providerInput)
 
@@ -142,7 +158,7 @@ func fuzzyMatchModel(models []engine.ModelInfo, modelInput, providerInput string
 	}
 
 	// Phase 2: case-insensitive substring match
-	var matches []engine.ModelInfo
+	var matches []ModelInfo
 	for _, m := range models {
 		if providerInput != "" && !strings.EqualFold(m.ProviderID, providerInput) {
 			continue

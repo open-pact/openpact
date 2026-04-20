@@ -67,14 +67,14 @@ type CalendarConfig struct {
 	URL  string `yaml:"url"`  // iCal feed URL
 }
 
-// EngineConfig configures the AI engine
+// EngineConfig configures the AI engine. Provider credentials, the default
+// model, and every other runtime setting now live in stackllm's own stores
+// under <workspace>/secure/data/ and are mutated through the admin UI's
+// /api/engine/ endpoints. Only the SQLite database path is surfaced here,
+// and only as an optional override — the default is
+// <workspace>/secure/data/stackllm.db.
 type EngineConfig struct {
-	Type     string `yaml:"type"`     // "opencode"
-	Provider string `yaml:"provider"` // For OpenCode: "anthropic", "openai", "ollama", etc.
-	Model    string `yaml:"model"`    // Model name
-	Port     int    `yaml:"port"`     // Port for opencode serve (default: 4098)
-	Hostname string `yaml:"hostname"` // Hostname for opencode serve (default: 127.0.0.1)
-	Password string `yaml:"password"` // Optional OPENCODE_SERVER_PASSWORD
+	DBPath string `yaml:"db_path,omitempty"` // Optional override for the stackllm SQLite path
 }
 
 // WorkspaceConfig configures workspace paths
@@ -102,19 +102,28 @@ func (w WorkspaceConfig) ScriptsDir() string {
 	return filepath.Join(w.Path, "ai-data", "scripts")
 }
 
-// EnsureDirs creates all required workspace directories if they don't exist.
+// EnsureDirs creates all required workspace directories if they don't
+// exist. secure/ and secure/data/ are created 0700 because they hold
+// user credentials, the JWT secret, stackllm's auth store, and the
+// SQLite session database. ai-data/ and its children are 0755 so the
+// orchestrator can read the SOUL/USER/MEMORY context files and write
+// daily memory rolls.
 func (w WorkspaceConfig) EnsureDirs() error {
-	dirs := []string{
+	tight := []string{w.SecureDir(), w.DataDir()}
+	loose := []string{
 		w.Path,
-		w.SecureDir(),
-		w.DataDir(),
 		w.AIDataDir(),
 		w.ScriptsDir(),
 		filepath.Join(w.AIDataDir(), "memory"),
 		filepath.Join(w.AIDataDir(), "skills"),
 	}
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+	for _, dir := range tight {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		}
+	}
+	for _, dir := range loose {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
@@ -151,13 +160,7 @@ type StarlarkConfig struct {
 // Default returns a config with sensible defaults
 func Default() *Config {
 	return &Config{
-		Engine: EngineConfig{
-			Type:     "opencode",
-			Provider: "anthropic",
-			Model:    "claude-sonnet-4-20250514",
-			Port:     4098,
-			Hostname: "127.0.0.1",
-		},
+		Engine: EngineConfig{},
 		Workspace: WorkspaceConfig{
 			Path: "/workspace",
 		},
@@ -218,14 +221,8 @@ func Load() (*Config, error) {
 	}
 
 	// Override with environment variables (re-apply after config file may have changed them)
-	if v := os.Getenv("ENGINE_TYPE"); v != "" {
-		cfg.Engine.Type = v
-	}
 	if v := os.Getenv("WORKSPACE_PATH"); v != "" {
 		cfg.Workspace.Path = v
-	}
-	if v := os.Getenv("OPENCODE_HOSTNAME"); v != "" {
-		cfg.Engine.Hostname = v
 	}
 	if v := os.Getenv("ADMIN_BIND"); v != "" {
 		cfg.Admin.Bind = v

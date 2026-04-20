@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenPact is a secure, minimal framework for running your own AI assistant. It's a Go monorepo with a Vue 3 admin UI and Docusaurus docs site. The AI assistant connects to Discord, uses an engine abstraction (OpenCode), and exposes capabilities through MCP (Model Context Protocol) tools with a security-first design.
+OpenPact is a secure, minimal framework for running your own AI assistant. It's a Go monorepo with a Vue 3 admin UI and Docusaurus docs site. The AI assistant connects to Discord/Slack/Telegram, runs LLM agents in-process via [stackllm](https://github.com/stack-bound/stackllm), and exposes capabilities to those agents through MCP (Model Context Protocol) tools with a security-first design.
 
 ## Build & Development Commands
 
@@ -33,69 +33,54 @@ cd docs && yarn install && yarn start          # Dev server
 cd docs && yarn build                          # Production build
 ```
 
-**Important:** The admin UI must be built (`admin-ui/dist/` must exist) before running Go tests, because `internal/admin/embed.go` uses `//go:embed all:admin-ui/dist`. Tests will fail without it. The embed directive expects the dist directory at `internal/admin/admin-ui/dist` (there's a symlink or copy step needed).
+**Important:** The admin UI must be built (`admin-ui/dist/` must exist) before running Go tests, because `admin-ui/embed.go` uses `//go:embed all:dist`. Build the UI first with `cd admin-ui && npm ci && npm run build`.
 
 ## Architecture
 
 **Data flow:**
 ```
-Discord msg  → Orchestrator → POST /session/:id/message → opencode serve → AI response → reply
-Discord /cmd → Orchestrator → session management (create/list/switch)
-Admin UI     → Admin API    → Orchestrator (SessionAPI) → opencode serve
+Discord/Slack/Telegram → Orchestrator → engine.Stack (stackllm agent, in-process) → reply
+Admin UI chat          → /api/engine/chat (stackllm web.ManagedHandler, SSE)       → reply
 ```
 
 **Key packages in `internal/`:**
-- **orchestrator/** — Central coordinator. Manages component lifecycle, routes Discord messages to the AI engine, injects context (SOUL/USER/MEMORY docs)
-- **mcp/** — MCP server implementing JSON-RPC 2.0 over stdin/stdout pipes. This is the security boundary — the AI can only use explicitly registered tools (~20 tools across workspace, memory, Discord, calendar, vault, web, GitHub, scripts)
-- **engine/** — Abstraction layer for AI coding agents. Communicates with OpenCode via its HTTP server API (see below)
-- **admin/** — Web server for the admin UI. JWT auth, session management, script approval workflow. File-based JSON storage (no database). Embeds the Vue SPA via `//go:embed`
-- **discord/** — Discord bot with user/channel allowlists and bidirectional messaging
-- **starlark/** — Sandboxed Starlark script execution with built-in modules (http, json, time, secrets). Secrets are injected at runtime and redacted from output before returning to the AI
-- **config/** — YAML + env var configuration loading
-- **context/** — Loads SOUL.md, USER.md, MEMORY.md from `ai-data/` for AI context injection
-- **health/** — Health checks and Prometheus metrics
-- **ratelimit/** — Token bucket rate limiter
-- **logging/** — Structured logging with configurable levels
+- **engine/** — Composes stackllm primitives into a single `Stack` (`profile.Manager`, `session.SQLiteStore`, `tools.Registry`, `web.ManagedHandler`). No interface, no HTTP hop — the agent runs in-process.
+- **orchestrator/** — Central coordinator. Builds the Stack, routes chat-provider messages through an `agent.Agent`, injects SOUL/USER/MEMORY as a system-role message, persists per-channel session IDs.
+- **mcp/** — MCP tool registry. The server object is used as a catalogue only; `engine.RegisterMCPTools` copies every registered tool into a native stackllm `tools.Registry` via a thin adapter. An optional stdio-mode server remains for future external MCP clients.
+- **admin/** — Web server for the admin UI. JWT auth, setup wizard, script/secret/schedule stores, and the mount of `stack.Handler` under `/api/engine/` so the browser can drive provider login, model selection, and SSE chat directly.
+- **starlark/** — Sandboxed Starlark script execution with built-in modules (http, json, time, secrets). Secrets are injected at runtime and redacted from output before returning to the AI.
+- **config/** — YAML + env var loader. The `engine:` block now has just a single optional `db_path` override; all LLM credentials and the default model live in stackllm's own stores under `secure/data/`.
+- **context/** — Loads SOUL.md, USER.md, MEMORY.md from `ai-data/` for AI context injection.
+- **chat/** — Abstract chat-provider interface (`ChatProvider`) shared by the Discord/Slack/Telegram adapters.
+- **scheduler/** — Cron-based Starlark and agent job runner. `RunAgent` on the orchestrator is the agent-job entrypoint.
 
-**Two entry points in `cmd/`:**
-- `cmd/openpact/` — Main orchestrator binary
-- `cmd/admin/` — Standalone admin server
+**Three entry points in `cmd/`:**
+- `cmd/openpact/` — Main binary (`openpact start` runs orchestrator + admin UI + engine stack).
+- `cmd/admin/` — Standalone admin server (dev convenience — spins up a minimal stack with workspace + memory tools only).
+- `cmd/mcp-server/` — Standalone stdio MCP server for external clients that want direct access to the tool registry.
 
-**Admin UI (`admin-ui/`):** Vue 3 + Naive UI component library. Built with Vite. The compiled output is embedded into the Go binary. During development, the Vite dev server proxies `/api` requests to `localhost:8888`.
+**Admin UI (`admin-ui/`):** Vue 3 + Naive UI. Built with Vite, embedded in the Go binary via `//go:embed`. Key views:
+- `/engine` (EngineView) — provider login + default-model picker. Drives `/api/engine/*`.
+- `/sessions` (SessionsView) — admin chat over `POST /api/engine/chat` SSE, laid out per the YummyAdmin Chat/* components.
+- `/settings/advanced` (AdvancedSettingsView) — logging, rate limiter, health address, Starlark limits. Backed by `/api/config/advanced`.
+- `/integrations` (IntegrationsView) — calendar feeds + Obsidian vault. Backed by `/api/config/integrations`.
+- `/secrets` — Starlark secret store + read-only view of authenticated LLM providers.
+- Setup wizard (`/setup`) — 3 steps: account → profile → provider login + default model.
 
-## OpenCode Engine Integration
+## Engine (stackllm, in-process)
 
-The engine (`internal/engine/opencode.go`) is a pure HTTP client that connects to an externally-managed [OpenCode](https://opencode.ai) `opencode serve` instance. In Docker, the entrypoint launches OpenCode as `openpact-ai` with a monitored restart loop; the Go engine just connects and talks HTTP.
+`internal/engine/stackllm.go` assembles:
+1. `auth.FileStore` at `<workspace>/secure/data/stackllm_auth.json` (0600) — provider tokens.
+2. `config.Store` at `<workspace>/secure/data/stackllm_config.json` — default provider/model, Ollama base URL, recent models.
+3. `session.SQLiteStore` at `<workspace>/secure/data/stackllm.db` (override with `engine.db_path`) — message history, artifacts, last-usage cache.
+4. `tools.Registry` built from the MCP `Server.ListTools()` output via `engine.RegisterMCPTools` (each MCP handler runs through `mcpToolAdapter.Call`).
+5. `web.NewManagedHandler` — the HTTP surface the admin UI mounts.
 
-**Documentation:** https://opencode.ai/docs/server/
-**OpenAPI spec (at runtime):** `http://<host>:<port>/doc`
+Providers available via the managed handler: OpenAI (API key or Codex-flow "Sign in with ChatGPT"), GitHub Copilot (device flow), Google Gemini (API key), Ollama (base URL). Anthropic is intentionally not surfaced — third-party harness use is no longer permitted.
 
-**How it works:**
-1. The Docker entrypoint generates OpenCode config via `openpact opencode-config` (produces `OPENCODE_CONFIG_CONTENT` JSON)
-2. The entrypoint launches `opencode serve --port 4098 --hostname 127.0.0.1` as `openpact-ai` in a restart loop
-3. On startup, the engine's `Start()` sets `baseURL` and polls `GET /global/health` until the server is ready
-4. All session and message operations go through the REST API:
-   - `POST /session` — Create a new session
-   - `GET /session` — List all sessions
-   - `GET /session/:id` — Get session details
-   - `DELETE /session/:id` — Delete a session
-   - `POST /session/:id/message` — Send a message (with `parts` array, optional `system` prompt and `model` override)
-   - `GET /session/:id/message` — Get message history
-   - `POST /session/:id/abort` — Abort a running session
-   - `GET /event` — SSE event stream for real-time updates
-5. On shutdown, `Stop()` is a no-op — the entrypoint manages the OpenCode process lifecycle
+The orchestrator calls `stack.Manager.Default` + `LoadProviderForModel` + `agent.New(provider, WithTools(stack.Tools))` on each chat message. System prompt (SOUL/USER/MEMORY) is prepended to the message history as a `RoleSystem` message the first time a session runs. Per-session mutexes serialize concurrent messages in the same channel.
 
-**Auth:** If `engine.password` is set in config, requests use HTTP basic auth (`username: "opencode"`, password from config). The entrypoint also passes the password to OpenCode via `OPENCODE_SERVER_PASSWORD` env var.
-
-**Session management:** OpenCode manages all session storage internally (SQLite). Chat providers use per-channel session tracking (persisted to `<DataDir>/channel_sessions.json`), where each `(provider, channelID)` pair maps to its own session. If a channel has no session when a message arrives, one is created automatically. The Admin UI can interact with any session directly.
-
-**Config (`secure/config.yaml`):**
-```yaml
-engine:
-  type: opencode
-  port: 4098          # Port for opencode serve (must match entrypoint)
-  password: ""        # Optional OPENCODE_SERVER_PASSWORD
-```
+Session management: each `(provider, channelID)` maps to one stackllm session UUID (persisted in `<DataDir>/channel_sessions.json`). stackllm's SQLite store owns the message history; the admin UI can interact with any session via `GET /api/engine/sessions/{id}`.
 
 ## Workspace Directory Structure
 
@@ -104,16 +89,21 @@ The workspace uses a security-first split between system and AI data:
 ```
 /workspace/
 ├── secure/                     # SYSTEM-ONLY — AI has ZERO access
-│   ├── config.yaml             # Main config (may contain passwords)
-│   └── data/                   # All admin/system data
+│   ├── config.yaml             # Bootstrap config (engine.db_path, admin bind, Starlark limits)
+│   └── data/                   # All system state
 │       ├── jwt_secret
 │       ├── users.json
 │       ├── approvals.json
-│       ├── secrets.json
+│       ├── secrets.json        # Starlark secrets (separate from LLM credentials)
 │       ├── chat_providers.json
 │       ├── channel_sessions.json
+│       ├── channel_modes.json
 │       ├── setup_state.json
-│       └── opencode/           # OpenCode engine state (SQLite, logs, etc.)
+│       ├── advanced_settings.json
+│       ├── integrations.json
+│       ├── stackllm_auth.json  # LLM provider tokens (OpenAI/Gemini/Copilot/Ollama)
+│       ├── stackllm_config.json # Default model + recent models
+│       └── stackllm.db         # Conversation history (pure-Go SQLite)
 ├── ai-data/                    # AI-ACCESSIBLE — MCP tools scope here
 │   ├── SOUL.md
 │   ├── USER.md
@@ -142,16 +132,23 @@ This has been a repeated source of bugs. Always check both methods when adding o
 
 ## Key Design Decisions
 
-- **No database** — All persistence is file-based JSON (users, script approvals)
-- **Security boundary at MCP** — AI never gets direct filesystem/network access; everything goes through registered MCP tools. MCP workspace tools are scoped to `ai-data/` only.
-- **Physical security split** — `secure/` for system data (config, secrets, JWT), `ai-data/` for AI-accessible files. No env var needed — derived from workspace path.
-- **Secret redaction** — Starlark scripts can use secrets, but all output is scanned and secret values are replaced with `[REDACTED:NAME]` before the AI sees results
-- **Two-user Docker model** — `openpact-system` (privileged) and `openpact-ai` (restricted) for principle of least privilege
-- **Go standard library for HTTP** — Uses `net/http` directly, no web framework
+- **Single binary** — stackllm runs in-process (pure-Go SQLite via `modernc.org/sqlite`). No Node, no opencode, no supervisor loop. CGO-free static build.
+- **Admin UI is the config surface** — provider credentials, default model, logging, rate limits, Starlark limits, calendar feeds, and vault config are all set through the web UI. `config.yaml` carries only bootstrap defaults.
+- **Security boundary at the tool registry** — the agent can only call tools that were registered by `mcp.RegisterAllTools`. Workspace tools are scoped to `ai-data/`; secrets are injected into Starlark at runtime and redacted from output.
+- **Physical security split** — `secure/` (0700) holds system data; `ai-data/` (0755) is AI-accessible. Derived from workspace path; no env var.
+- **Single-user containers** — the old two-user Docker model is gone along with OpenCode. The binary runs as one unprivileged user.
+- **Go standard library for HTTP** — `net/http` directly, no web framework.
 
 ## Configuration
 
-The app reads `secure/config.yaml` from the workspace. All paths are derived from `WORKSPACE_PATH` — no separate data dir env var. Key env vars: `DISCORD_TOKEN`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`.
+`secure/config.yaml` is the bootstrap file. LLM provider credentials and the default model live in stackllm's own stores (`stackllm_auth.json` + `stackllm_config.json` under `secure/data/`) and are managed through the admin UI at `/engine`. Advanced knobs (logging, rate limit, Starlark limits) are in `advanced_settings.json` via `/settings/advanced`; integrations (calendars, vault) in `integrations.json` via `/integrations`.
+
+Key env vars (bootstrap only):
+- `WORKSPACE_PATH` — workspace root (default `/workspace`).
+- `CONFIG_PATH` — path to `config.yaml` (default `<workspace>/secure/config.yaml`).
+- `ADMIN_BIND` — admin UI bind address (default from config.yaml).
+- `DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN` — chat-provider tokens (also settable via admin UI).
+- `GITHUB_TOKEN` — GitHub MCP tool auth.
 
 ## Admin UI Theme Reference — MANDATORY RULES
 
@@ -189,4 +186,7 @@ The admin UI is based on the [YummyAdmin](https://github.com/nicevoice/yummy-adm
 
 ## Go Module
 
-Module path: `github.com/open-pact/openpact`, Go 1.22.
+Module path: `github.com/open-pact/openpact`, Go 1.25. Key dependencies:
+- `github.com/stack-bound/stackllm@v0.4.0` — in-process LLM engine, tool registry, session store, web.ManagedHandler.
+- `modernc.org/sqlite` — pure-Go SQLite driver (transitive via stackllm). Keeps the build CGO-free.
+- `github.com/gorilla/websocket`, `github.com/robfig/cron/v3`, `go.starlark.net`, chat provider SDKs.

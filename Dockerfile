@@ -1,5 +1,10 @@
 # OpenPact Dockerfile
-# Two-user security model: openpact-system (privileged) and openpact-ai (restricted)
+#
+# Single static binary, single user. Everything the app needs — the LLM
+# engine (stackllm, in-process), the MCP tool registry (native Go), the
+# admin UI (embedded via //go:embed), and the SQLite session store
+# (pure-Go modernc.org/sqlite) — ships inside one Go binary. No Node,
+# no opencode, no separate processes.
 
 FROM node:22-alpine AS ui-builder
 
@@ -25,69 +30,35 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o mcp-server ./cmd/mcp-server
 
 FROM debian:bookworm-slim
 
-# Install dependencies
+# ca-certificates is required for outbound TLS (provider APIs).
+# git is kept for the Obsidian vault integration's auto-sync path.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
-    gosu \
-    netcat-openbsd \
-    openssh-client \
-    nodejs \
-    npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OpenCode (pinned version)
-ARG OPENCODE_VERSION=1.1.53
-RUN npm install -g opencode-ai@${OPENCODE_VERSION}
+RUN useradd --system --create-home --home-dir /home/openpact openpact
 
-# Create users and groups
-RUN addgroup --system openpact && \
-    adduser --system --home /home/openpact-system --ingroup openpact openpact-system && \
-    adduser --system --ingroup openpact openpact-ai
+RUN mkdir -p /app /workspace && \
+    chown -R openpact:openpact /app /workspace && \
+    chmod 755 /app /workspace
 
-# Create directories with correct permissions
-RUN mkdir -p /app /workspace /workspace/secure/data /workspace/engine /workspace/ai-data/memory /workspace/ai-data/skills /workspace/ai-data/scripts /run/mcp && \
-    chown -R openpact-system:openpact /app /workspace /run/mcp && \
-    chown -R openpact-ai:openpact /workspace/engine && \
-    chmod 750 /app /workspace && \
-    chmod 700 /workspace/secure && \
-    chmod 700 /workspace/secure/data && \
-    chmod 775 /workspace/engine && \
-    chmod 775 /workspace/ai-data && \
-    chmod 770 /run/mcp
-
-# Copy binaries
 COPY --from=builder /build/openpact /app/openpact
 COPY --from=builder /build/mcp-server /app/mcp-server
 RUN chmod 755 /app/openpact /app/mcp-server
 
-# Copy default templates
 COPY templates/ /app/templates/
-RUN chown -R openpact-system:openpact /app/templates
+RUN chown -R openpact:openpact /app/templates
 
-# Workspace files: system owns, group can read
-# (openpact-ai can read but not write directly)
+ENV HOME=/home/openpact
+ENV WORKSPACE_PATH=/workspace
+ENV ADMIN_BIND=0.0.0.0:8888
 
-# Create home directory structure (entrypoint symlinks opencode creds into workspace)
-RUN mkdir -p /home/openpact-system/.local/share && \
-    chown -R openpact-system:openpact /home/openpact-system
-
-# Create home for AI user (OpenCode runs as this user)
-RUN mkdir -p /home/openpact-ai/.local/share && \
-    chown -R openpact-ai:openpact /home/openpact-ai
-
-ENV HOME=/home/openpact-system
-
+USER openpact
 WORKDIR /workspace
 VOLUME /workspace
 
-# Copy entrypoint script
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod 755 /app/docker-entrypoint.sh
+EXPOSE 8888
 
-# Expose admin UI port and OpenCode OAuth callback port
-EXPOSE 8888 1455
-
-# Entrypoint runs as root to fix bind-mount permissions, then drops to openpact-system
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+ENTRYPOINT ["/app/openpact"]
 CMD ["start"]

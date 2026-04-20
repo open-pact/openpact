@@ -1,4 +1,11 @@
 <script setup>
+// SessionsView — admin chat over the stackllm web.ManagedHandler SSE
+// endpoints. Visual structure mirrors the YummyAdmin theme's Chat/*
+// components (ChatApp, ChatMessages, ChatList, MessageItem) verbatim —
+// every height/calc value is a copy from the theme source, per the
+// CLAUDE.md rule. Only the transport changed: we POST to /api/engine/chat
+// and parse Server-Sent Events instead of driving a WebSocket.
+
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useMessage, useDialog } from 'naive-ui'
 import { useApi } from '@/composables/useApi'
@@ -12,7 +19,6 @@ import {
   NButton,
   NIcon,
   NEmpty,
-  NInput,
   NScrollbar,
   NSpin,
 } from 'naive-ui'
@@ -30,21 +36,24 @@ const dialog = useDialog()
 const api = useApi()
 const auth = useAuth()
 
-// Sessions
 const sessions = ref([])
 const sessionsLoading = ref(true)
+const sessionsLoadingMore = ref(false)
+const sessionsTotal = ref(0)
+const sessionsOffset = ref(0)
+const SESSIONS_PAGE_SIZE = 50
 const selectedSessionId = ref(null)
+const messagesLoading = ref(false)
+const messagesScrollRef = ref(null)
 
-// Chat
 const chatMessages = ref([])
 const chatInput = ref('')
 const chatLoading = ref(false)
-const chatConnected = ref(false)
-const messagesLoading = ref(false)
-const messagesScrollRef = ref(null)
-let ws = null
 
-// Mobile sidebar
+// The active SSE stream. We abort it on unmount or when the user sends a
+// second message while one is in flight.
+let streamAbort = null
+
 const sidebarCollapsed = ref(window.innerWidth < 768)
 const isMobile = ref(window.innerWidth < 768)
 
@@ -53,453 +62,368 @@ function handleResize() {
   if (!isMobile.value) sidebarCollapsed.value = false
 }
 
-const selectedSession = computed(() =>
-  sessions.value.find(s => s.id === selectedSessionId.value)
+const selectedSessionTitle = computed(() => {
+  if (!selectedSessionId.value) return ''
+  const row = sessions.value.find(s => s.id === selectedSessionId.value)
+  if (row && row.name) return row.name
+  return selectedSessionId.value.substring(0, 16)
+})
+
+const canLoadMore = computed(
+  () => sessions.value.length < sessionsTotal.value,
 )
-const selectedSessionTitle = computed(() =>
-  selectedSession.value?.title || '(untitled)'
-)
 
-// Strip literal \n escape sequences that some models (e.g. Gemini) emit in reasoning text
-function cleanThinking(text) {
-  return text ? text.replace(/\\n/g, '') : ''
+// ---- Session list (server-backed, paginated) ----
+// We load in pages of SESSIONS_PAGE_SIZE from GET /api/engine/sessions.
+// Includes bot sessions (Discord/Slack/Telegram/scheduler) alongside the
+// admin-chat sessions — the orchestrator names bot sessions on creation
+// so the list is browsable.
+async function loadSessionsPage(offset) {
+  const url = `/api/engine/sessions?limit=${SESSIONS_PAGE_SIZE}&offset=${offset}`
+  const response = await api.get(url)
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.message || `HTTP ${response.status}`)
+  }
+  return response.json()
 }
 
-// --- Message parsing ---
-function parseMessageParts(parts) {
-  if (!parts || !parts.length) return { orderedParts: [] }
-
-  const orderedParts = []
-
-  for (const part of parts) {
-    if (part.type === 'reasoning' || part.type === 'thinking') {
-      orderedParts.push({
-        kind: 'thinking',
-        content: cleanThinking(part.text),
-        partId: part.id || null,
-        label: 'Thinking',
-        expanded: false,
-      })
-    } else if (part.type === 'text') {
-      orderedParts.push({
-        kind: 'text',
-        content: part.text || '',
-        partId: part.id || null,
-      })
-    } else {
-      const block = partToBlock(part)
-      if (block) {
-        block.partId = part.id || null
-        orderedParts.push(block)
-      }
-    }
-  }
-
-  return { orderedParts }
-}
-
-// Convert a single raw part object into a display block (reused by parseMessageParts and WS handler)
-// Returns null for parts that should be skipped (step-start/step-finish markers).
-function partToBlock(part) {
-  if (part.type === 'step-start' || part.type === 'step-finish') {
-    return null
-  }
-  if (part.type === 'tool') {
-    return {
-      kind: 'tool',
-      label: `Tool: ${part.tool?.name || part.tool || 'unknown'}`,
-      content: formatToolContent(part),
-      expanded: false,
-    }
-  } else if (part.type === 'file') {
-    return {
-      kind: 'file',
-      label: `File: ${part.source || part.url || 'attachment'}`,
-      content: `URL: ${part.url || '(none)'}\nMIME: ${part.mime || 'unknown'}`,
-      expanded: false,
-    }
-  } else if (part.type === 'snapshot') {
-    return {
-      kind: 'snapshot',
-      label: 'Snapshot',
-      content: typeof part.snapshot === 'string' ? part.snapshot : JSON.stringify(part.snapshot, null, 2),
-      expanded: false,
-    }
-  }
-  // Unknown non-text/thinking type
-  return {
-    kind: part.type || 'unknown',
-    label: part.type || 'Unknown',
-    content: JSON.stringify(part, null, 2),
-    expanded: false,
-  }
-}
-
-function formatToolContent(part) {
-  const lines = []
-  const tool = part.tool
-  if (typeof tool === 'object' && tool) {
-    if (tool.name) lines.push(`Name: ${tool.name}`)
-    if (tool.input) {
-      lines.push(`Input: ${typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}`)
-    }
-  } else if (tool) {
-    lines.push(`Tool: ${tool}`)
-  }
-  const state = part.state
-  if (state) {
-    if (typeof state === 'object') {
-      if (state.status) lines.push(`Status: ${state.status}`)
-      if (state.output) lines.push(`Output: ${typeof state.output === 'string' ? state.output : JSON.stringify(state.output, null, 2)}`)
-      if (state.error) lines.push(`Error: ${state.error}`)
-    } else {
-      lines.push(`State: ${state}`)
-    }
-  }
-  return lines.join('\n') || JSON.stringify(part, null, 2)
-}
-
-function togglePart(part) {
-  part.expanded = !part.expanded
-}
-
-function isLastBubblePart(msg, partIndex) {
-  for (let j = msg.orderedParts.length - 1; j >= 0; j--) {
-    const k = msg.orderedParts[j].kind
-    if (k === 'text' || k === 'file' || k === 'snapshot') return j === partIndex
-  }
-  return false
-}
-
-// --- Sessions ---
-async function loadSessions() {
+async function loadInitialSessions() {
   sessionsLoading.value = true
   try {
-    const response = await api.get('/api/sessions')
-    if (response.ok) {
-      sessions.value = await response.json()
-    }
+    const page = await loadSessionsPage(0)
+    sessions.value = page.sessions || []
+    sessionsTotal.value = page.total || 0
+    sessionsOffset.value = sessions.value.length
   } catch (e) {
-    message.error('Failed to load sessions')
+    message.error('Failed to load sessions: ' + e.message)
+    sessions.value = []
+    sessionsTotal.value = 0
+    sessionsOffset.value = 0
   } finally {
     sessionsLoading.value = false
   }
 }
 
-async function createSession() {
+async function loadMoreSessions() {
+  if (sessionsLoadingMore.value || !canLoadMore.value) return
+  sessionsLoadingMore.value = true
   try {
-    const response = await api.post('/api/sessions', {})
-    if (response.ok) {
-      const newSession = await response.json()
-      await loadSessions()
-      selectSession(newSession.id)
-    } else {
-      const data = await response.json()
-      message.error(data.error || 'Failed to create session')
-    }
+    const page = await loadSessionsPage(sessionsOffset.value)
+    const fresh = (page.sessions || []).filter(
+      s => !sessions.value.some(existing => existing.id === s.id),
+    )
+    sessions.value = [...sessions.value, ...fresh]
+    sessionsTotal.value = page.total || sessionsTotal.value
+    sessionsOffset.value = sessions.value.length
   } catch (e) {
-    message.error('Failed to create session')
+    message.error('Failed to load more: ' + e.message)
+  } finally {
+    sessionsLoadingMore.value = false
   }
 }
 
-function confirmDelete(id, e) {
+// refreshSession fetches metadata for a single id and moves it to the top
+// of the list, or inserts it if not already present. Called after a chat
+// reply lands (a session may have been created server-side or its
+// updated_at bumped).
+async function refreshSession(id) {
+  if (!id) return
+  try {
+    const response = await api.get(`/api/engine/sessions/${id}`)
+    if (!response.ok) return
+    const data = await response.json()
+    const summary = {
+      id: data.id,
+      name: data.name || '',
+      model: data.model || '',
+      updated: data.updated,
+      created: data.created,
+    }
+    const without = sessions.value.filter(s => s.id !== id)
+    sessions.value = [summary, ...without]
+    // If this id wasn't in the current page, total gained a row.
+    if (!sessions.value.slice(1).some(s => s.id === id)) {
+      sessionsTotal.value = Math.max(sessionsTotal.value, sessions.value.length)
+    }
+    sessionsOffset.value = sessions.value.length
+  } catch {
+    // Non-fatal — list stays usable.
+  }
+}
+
+function dropSession(id) {
+  sessions.value = sessions.value.filter(s => s.id !== id)
+  sessionsTotal.value = Math.max(0, sessionsTotal.value - 1)
+  sessionsOffset.value = sessions.value.length
+}
+
+function newSession() {
+  // A fresh session is created lazily by the server on the first /chat
+  // call when session_id is empty. We just clear the pane.
+  selectedSessionId.value = null
+  chatMessages.value = []
+  chatInput.value = ''
+  if (isMobile.value) sidebarCollapsed.value = true
+  nextTick(() => scrollToBottom())
+}
+
+async function confirmDelete(id, e) {
   if (e) e.stopPropagation()
   dialog.error({
-    title: 'Delete Session',
-    content: 'Delete this session and all its messages? This cannot be undone.',
+    title: 'Delete session',
+    content: 'Delete this session and its messages? This cannot be undone.',
     positiveText: 'Delete',
     negativeText: 'Cancel',
     onPositiveClick: async () => {
       try {
-        const response = await api.del(`/api/sessions/${id}`)
-        if (response.ok) {
-          message.success('Session deleted')
+        const response = await api.del(`/api/engine/sessions/${id}`)
+        if (response.ok || response.status === 204) {
+          dropSession(id)
           if (selectedSessionId.value === id) {
             selectedSessionId.value = null
             chatMessages.value = []
-            disconnectChat()
           }
-          await loadSessions()
+          message.success('Session deleted')
+        } else if (response.status === 404) {
+          // Server doesn't know this id — drop it from the sidebar anyway
+          // so the list stays honest.
+          dropSession(id)
         } else {
-          message.error('Failed to delete session')
+          const data = await response.json().catch(() => ({}))
+          message.error('Delete failed: ' + (data.message || data.error || `HTTP ${response.status}`))
         }
       } catch (e) {
-        message.error('Failed to delete session')
+        message.error('Delete failed: ' + e.message)
       }
     },
   })
 }
 
-// --- Chat ---
-async function selectSession(sessionId) {
-  if (selectedSessionId.value === sessionId) return
-  selectedSessionId.value = sessionId
+// ---- Load messages when selecting a session ----
+async function selectSession(id) {
+  if (selectedSessionId.value === id) return
+  abortStream()
+  selectedSessionId.value = id
   chatMessages.value = []
   chatInput.value = ''
-  chatConnected.value = false
-  chatLoading.value = false
-
   if (isMobile.value) sidebarCollapsed.value = true
-
-  disconnectChat()
 
   messagesLoading.value = true
   try {
-    const response = await api.get(`/api/sessions/${sessionId}/messages?limit=50`)
+    const response = await api.get(`/api/engine/sessions/${id}`)
     if (response.ok) {
-      const msgs = await response.json()
-      if (msgs && msgs.length) {
-        chatMessages.value = msgs.map(m => {
-          const parsed = parseMessageParts(m.parts)
-          return { role: m.role, orderedParts: parsed.orderedParts }
-        }).filter(m => m.orderedParts.length > 0)
-      }
+      const data = await response.json()
+      chatMessages.value = (data.messages || [])
+        .filter(m => m.role !== 'system')
+        .map(m => ({
+          role: m.role,
+          orderedParts: blocksToParts(m.blocks || []),
+        }))
+        .filter(m => m.orderedParts.length > 0)
     }
   } catch (e) {
-    // Non-critical
+    // Non-fatal — empty state is OK.
   } finally {
     messagesLoading.value = false
     await nextTick()
     scrollToBottom()
   }
-
-  connectChat(sessionId)
 }
 
-function connectChat(sessionId) {
-  const token = auth.accessToken.value
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${protocol}//${window.location.host}/api/sessions/${sessionId}/chat?token=${token}`
-
-  ws = new WebSocket(wsUrl)
-
-  ws.onopen = () => { chatConnected.value = true }
-
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data)
-
-    // Helper: get or create the streaming assistant message
-    function getOrCreateStreamingMessage() {
-      const last = chatMessages.value[chatMessages.value.length - 1]
-      if (last && last.role === 'assistant' && last.streaming) return last
-      const newMsg = {
-        role: 'assistant',
-        orderedParts: [],
-        streaming: true,
-        _partIndex: {},  // partId → index in orderedParts for O(1) upsert
-      }
-      chatMessages.value.push(newMsg)
-      return newMsg
-    }
-
-    switch (msg.type) {
-      case 'connected':
-        chatConnected.value = true
+function blocksToParts(blocks) {
+  const out = []
+  for (const b of blocks) {
+    switch (b.type) {
+      case 'text':
+        out.push({ kind: 'text', content: b.text || '' })
         break
-      case 'thinking': {
-        const assistantMsg = getOrCreateStreamingMessage()
-        const cleaned = cleanThinking(msg.content)
-        if (msg.part_id) {
-          if (msg.part_id in assistantMsg._partIndex) {
-            // Update existing thinking part in-place
-            assistantMsg.orderedParts[assistantMsg._partIndex[msg.part_id]].content = cleaned
-          } else {
-            // New thinking part — push and record index
-            assistantMsg._partIndex[msg.part_id] = assistantMsg.orderedParts.length
-            assistantMsg.orderedParts.push({
-              kind: 'thinking',
-              content: cleaned,
-              partId: msg.part_id,
-              label: 'Thinking',
-              expanded: false,
-            })
-          }
-        } else {
-          // Fallback (reconciliation/no part_id): append to last thinking entry or create new
-          const lastThinking = [...assistantMsg.orderedParts].reverse().find(p => p.kind === 'thinking')
-          if (lastThinking) {
-            lastThinking.content += cleaned
-          } else {
-            assistantMsg.orderedParts.push({
-              kind: 'thinking',
-              content: cleaned,
-              partId: null,
-              label: 'Thinking',
-              expanded: false,
-            })
-          }
-        }
-        nextTick(() => scrollToBottom())
+      case 'thinking':
+        out.push({ kind: 'thinking', label: 'Thinking', content: b.text || '', expanded: false })
         break
-      }
-      case 'text': {
-        const assistantMsg = getOrCreateStreamingMessage()
-        if (msg.part_id) {
-          if (msg.part_id in assistantMsg._partIndex) {
-            // Update existing text part in-place
-            assistantMsg.orderedParts[assistantMsg._partIndex[msg.part_id]].content = msg.content
-          } else {
-            // New text part — separate entry preserving position relative to tool calls
-            assistantMsg._partIndex[msg.part_id] = assistantMsg.orderedParts.length
-            assistantMsg.orderedParts.push({
-              kind: 'text',
-              content: msg.content,
-              partId: msg.part_id,
-            })
-          }
-        } else {
-          // Fallback (reconciliation/no part_id): append to last text entry or create new
-          const lastText = [...assistantMsg.orderedParts].reverse().find(p => p.kind === 'text')
-          if (lastText) {
-            lastText.content += msg.content
-          } else {
-            assistantMsg.orderedParts.push({
-              kind: 'text',
-              content: msg.content,
-              partId: null,
-            })
-          }
-        }
-        nextTick(() => scrollToBottom())
+      case 'tool_use':
+        out.push({
+          kind: 'tool',
+          label: `Tool: ${b.tool_name || 'unknown'}`,
+          content: `Input: ${b.tool_args_json || '{}'}`,
+          expanded: false,
+        })
         break
-      }
-      case 'part': {
-        const block = partToBlock(msg.data)
-        if (!block) break // skip step-start/step-finish markers
-        const assistantMsg = getOrCreateStreamingMessage()
-        block.partId = msg.part_id || null
-        if (msg.is_update && msg.part_id && msg.part_id in assistantMsg._partIndex) {
-          // Update existing part in-place, preserve expanded state
-          const idx = assistantMsg._partIndex[msg.part_id]
-          const wasExpanded = assistantMsg.orderedParts[idx].expanded
-          block.expanded = wasExpanded
-          assistantMsg.orderedParts[idx] = block
-        } else {
-          // New part — push and record index
-          if (msg.part_id) {
-            assistantMsg._partIndex[msg.part_id] = assistantMsg.orderedParts.length
-          }
-          assistantMsg.orderedParts.push(block)
-        }
-        nextTick(() => scrollToBottom())
-        break
-      }
-      case 'done':
-        chatLoading.value = false
-        {
-          const lastMsg = chatMessages.value[chatMessages.value.length - 1]
-          if (lastMsg) {
-            lastMsg.streaming = false
-            delete lastMsg._partIndex
-          }
-        }
-        loadSessions()
-        break
-      case 'error':
-        message.error(msg.content || 'Chat error')
-        chatLoading.value = false
+      case 'tool_result':
+        out.push({
+          kind: 'tool',
+          label: 'Tool result',
+          content: b.text || '',
+          expanded: false,
+        })
         break
     }
   }
-
-  ws.onclose = () => { chatConnected.value = false }
-  ws.onerror = () => { chatConnected.value = false }
+  return out
 }
 
-function disconnectChat() {
-  if (ws) { ws.close(); ws = null }
+function togglePart(p) { p.expanded = !p.expanded }
+
+function isLastBubblePart(msg, i) {
+  for (let j = msg.orderedParts.length - 1; j >= 0; j--) {
+    const k = msg.orderedParts[j].kind
+    if (k === 'text') return j === i
+  }
+  return false
 }
 
-function formatTokens(n) {
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
-  return String(n)
+function isLastInGroup(i) {
+  const msgs = chatMessages.value
+  if (i === msgs.length - 1) return true
+  return msgs[i].role !== msgs[i + 1].role
 }
 
-function formatContextUsageMessage(usage) {
-  const lines = []
-
-  if (usage.model) lines.push(`**Model:** \`${usage.model}\``)
-  lines.push(`**Messages:** ${usage.message_count} assistant responses`)
-
-  if (usage.message_count === 0) {
-    lines.push('No assistant messages yet — context usage unavailable.')
-    return lines.join('\n')
-  }
-
-  if (usage.context_limit > 0) {
-    const pct = (usage.current_context / usage.context_limit * 100).toFixed(1)
-    lines.push(`**Current context:** ${formatTokens(usage.current_context)} tokens (${pct}% of ${formatTokens(usage.context_limit)})`)
-  } else {
-    lines.push(`**Current context:** ${formatTokens(usage.current_context)} tokens`)
-  }
-
-  if (usage.total_reasoning > 0) {
-    lines.push(`**Total output:** ${formatTokens(usage.total_output)} tokens (${formatTokens(usage.total_reasoning)} reasoning)`)
-  } else {
-    lines.push(`**Total output:** ${formatTokens(usage.total_output)} tokens`)
-  }
-
-  if (usage.cache_read > 0 || usage.cache_write > 0) {
-    lines.push(`**Cache:** ${formatTokens(usage.cache_read)} read / ${formatTokens(usage.cache_write)} write`)
-  }
-
-  if (usage.total_cost > 0) {
-    lines.push(`**Total cost:** $${usage.total_cost.toFixed(4)}`)
-  }
-
-  return lines.join('\n')
-}
-
-async function handleContextCommand() {
+// ---- SSE chat ----
+async function sendMessage() {
+  const content = chatInput.value.trim()
+  if (!content || chatLoading.value) return
   chatInput.value = ''
-  chatMessages.value.push({ role: 'user', orderedParts: [{ kind: 'text', content: '/context' }] })
+  chatLoading.value = true
+
+  chatMessages.value.push({ role: 'user', orderedParts: [{ kind: 'text', content }] })
+  const assistant = {
+    role: 'assistant',
+    orderedParts: [],
+    streaming: true,
+    _textIndex: -1,
+    _thinkingIndex: -1,
+  }
+  chatMessages.value.push(assistant)
   await nextTick()
   scrollToBottom()
 
   try {
-    const response = await api.get(`/api/sessions/${selectedSessionId.value}/context`)
-    if (response.ok) {
-      const usage = await response.json()
-      const content = formatContextUsageMessage(usage)
-      chatMessages.value.push({
-        role: 'assistant',
-        orderedParts: [{ kind: 'text', content }],
-        system: true,
-      })
-    } else {
-      const data = await response.json().catch(() => ({}))
-      chatMessages.value.push({
-        role: 'assistant',
-        orderedParts: [{ kind: 'text', content: `Failed to get context usage: ${data.error || 'unknown error'}` }],
-        system: true,
-      })
-    }
+    await streamChat(content, assistant)
   } catch (e) {
-    chatMessages.value.push({
-      role: 'assistant',
-      orderedParts: [{ kind: 'text', content: `Failed to get context usage: ${e.message}` }],
-      system: true,
-    })
+    message.error('Chat failed: ' + e.message)
+  } finally {
+    assistant.streaming = false
+    chatLoading.value = false
   }
-  await nextTick()
-  scrollToBottom()
 }
 
-function sendMessage() {
-  if (!chatInput.value.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
-  const content = chatInput.value.trim()
+async function streamChat(content, assistant) {
+  abortStream()
+  streamAbort = new AbortController()
 
-  // Handle /context command locally
-  if (content === '/context') {
-    handleContextCommand()
-    return
+  const body = {
+    session_id: selectedSessionId.value || '',
+    message: {
+      role: 'user',
+      blocks: [{ type: 'text', text: content }],
+    },
   }
 
-  chatMessages.value.push({ role: 'user', orderedParts: [{ kind: 'text', content }] })
-  chatInput.value = ''
-  chatLoading.value = true
-  ws.send(JSON.stringify({ type: 'message', content }))
-  nextTick(() => scrollToBottom())
+  const resp = await fetch('/api/engine/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...auth.getAuthHeader(),
+    },
+    credentials: 'include',
+    body: JSON.stringify(body),
+    signal: streamAbort.signal,
+  })
+
+  if (!resp.ok || !resp.body) {
+    const data = await resp.json().catch(() => ({}))
+    throw new Error(data.error || `HTTP ${resp.status}`)
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // Split buffer into complete SSE events (double-newline terminated).
+    let idx
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const raw = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      const ev = parseSSEEvent(raw)
+      if (ev) handleEvent(ev, assistant)
+    }
+  }
+}
+
+function parseSSEEvent(raw) {
+  const lines = raw.split('\n')
+  let event = 'message'
+  let data = ''
+  for (const line of lines) {
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    else if (line.startsWith('data:')) data += line.slice(5).trim()
+  }
+  if (!data) return null
+  try {
+    return { event, data: JSON.parse(data) }
+  } catch {
+    return null
+  }
+}
+
+function handleEvent(ev, assistant) {
+  switch (ev.event) {
+    case 'block_start':
+      // Pre-create a slot for the incoming block so deltas land in order.
+      if (ev.data.block_type === 'text') {
+        assistant._textIndex = assistant.orderedParts.length
+        assistant.orderedParts.push({ kind: 'text', content: '' })
+      } else if (ev.data.block_type === 'thinking') {
+        assistant._thinkingIndex = assistant.orderedParts.length
+        assistant.orderedParts.push({ kind: 'thinking', label: 'Thinking', content: '', expanded: false })
+      }
+      break
+    case 'block_delta':
+      if (ev.data.block_type === 'text' && assistant._textIndex >= 0) {
+        assistant.orderedParts[assistant._textIndex].content += (ev.data.delta || '')
+      } else if (ev.data.block_type === 'thinking' && assistant._thinkingIndex >= 0) {
+        assistant.orderedParts[assistant._thinkingIndex].content += (ev.data.delta || '')
+      }
+      nextTick(() => scrollToBottom())
+      break
+    case 'block_end':
+      if (ev.data.block && ev.data.block_type === 'tool_use') {
+        assistant.orderedParts.push({
+          kind: 'tool',
+          label: `Tool: ${ev.data.block.tool_name || 'unknown'}`,
+          content: `Args: ${ev.data.block.tool_args || '{}'}`,
+          expanded: false,
+        })
+      }
+      // Reset the streaming slot indexes so the next block_start picks a
+      // fresh one (some turns emit multiple text blocks).
+      if (ev.data.block_type === 'text') assistant._textIndex = -1
+      if (ev.data.block_type === 'thinking') assistant._thinkingIndex = -1
+      break
+    case 'done':
+      if (ev.data.session_id) {
+        selectedSessionId.value = ev.data.session_id
+        // Pull the fresh metadata row so the sidebar shows the new session
+        // (or bumps the existing one to the top of the list).
+        refreshSession(ev.data.session_id)
+      }
+      break
+    case 'error':
+      message.error(ev.data.message || 'Stream error')
+      break
+  }
+}
+
+function abortStream() {
+  if (streamAbort) {
+    streamAbort.abort()
+    streamAbort = null
+  }
 }
 
 function handleInputKeydown(e) {
@@ -514,29 +438,15 @@ function scrollToBottom() {
   if (el && el.scrollTo) el.scrollTo({ top: 999999, behavior: 'smooth' })
 }
 
-function formatTime(session) {
-  if (!session.time?.updated) return ''
-  const d = new Date(session.time.updated)
-  const now = new Date()
-  if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-  }
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
-
-function isLastInGroup(index) {
-  const msgs = chatMessages.value
-  if (index === msgs.length - 1) return true
-  return msgs[index].role !== msgs[index + 1].role
-}
+function shortId(id) { return id ? id.substring(0, 8) : '' }
 
 onMounted(() => {
-  loadSessions()
+  loadInitialSessions()
   window.addEventListener('resize', handleResize)
 })
 
 onBeforeUnmount(() => {
-  disconnectChat()
+  abortStream()
   window.removeEventListener('resize', handleResize)
 })
 </script>
@@ -553,58 +463,70 @@ onBeforeUnmount(() => {
       @collapse="sidebarCollapsed = true"
       @expand="sidebarCollapsed = false"
     >
-      <!-- Sidebar header with New button -->
       <div class="p-3 flex items-center justify-between">
-        <span class="text-base font-semibold">Sessions</span>
-        <n-button size="small" type="primary" @click="createSession">
+        <span class="text-base font-semibold">
+          Sessions
+          <span v-if="sessionsTotal" class="text-xs text-gray-500 font-normal ms-1">
+            {{ sessions.length }} / {{ sessionsTotal }}
+          </span>
+        </span>
+        <n-button size="small" type="primary" @click="newSession">
           <template #icon><n-icon><AddOutline /></n-icon></template>
           New
         </n-button>
       </div>
-      <!-- Sidebar list — matches theme .chat-sidebar -->
       <div class="chat-sidebar">
         <NScrollbar>
           <n-spin v-if="sessionsLoading" size="small" style="display: block; margin: 24px auto" />
-          <!-- Matches ChatList.vue: NList hoverable clickable -->
-          <NList v-else-if="sessions.length" hoverable clickable class="pe-1">
-            <NListItem
-              v-for="session in sessions"
-              :key="session.id"
-              :class="{ selected: session.id === selectedSessionId }"
-              @click="selectSession(session.id)"
-            >
-              <div class="flex items-center justify-between w-full">
-                <div class="flex flex-col min-w-0 flex-1">
-                  <span class="text-sm dark:text-white overflow-hidden text-ellipsis whitespace-nowrap">
-                    {{ session.title || '(untitled)' }}
-                  </span>
-                  <span class="text-xs text-gray-500 overflow-hidden text-ellipsis whitespace-nowrap">
-                    {{ session.id.substring(0, 8) }}
-                    <template v-if="formatTime(session)"> &middot; {{ formatTime(session) }}</template>
-                  </span>
+          <template v-else-if="sessions.length">
+            <NList hoverable clickable class="pe-1">
+              <NListItem
+                v-for="s in sessions"
+                :key="s.id"
+                :class="{ selected: s.id === selectedSessionId }"
+                @click="selectSession(s.id)"
+              >
+                <div class="flex items-center justify-between w-full">
+                  <div class="flex flex-col min-w-0 flex-1">
+                    <span class="text-sm dark:text-white overflow-hidden text-ellipsis whitespace-nowrap">
+                      {{ s.name || shortId(s.id) }}
+                    </span>
+                    <span v-if="s.name" class="text-xs text-gray-400 font-mono overflow-hidden text-ellipsis whitespace-nowrap">
+                      {{ shortId(s.id) }}
+                    </span>
+                  </div>
+                  <n-button
+                    quaternary
+                    size="tiny"
+                    class="session-delete-btn"
+                    @click="confirmDelete(s.id, $event)"
+                  >
+                    <template #icon><n-icon size="14"><TrashOutline /></n-icon></template>
+                  </n-button>
                 </div>
-                <n-button
-                  quaternary
-                  size="tiny"
-                  class="session-delete-btn"
-                  @click="confirmDelete(session.id, $event)"
-                >
-                  <template #icon><n-icon size="14"><TrashOutline /></n-icon></template>
-                </n-button>
-              </div>
-            </NListItem>
-          </NList>
+              </NListItem>
+            </NList>
+            <div v-if="canLoadMore" class="p-3 flex justify-center">
+              <n-button
+                size="small"
+                quaternary
+                :loading="sessionsLoadingMore"
+                @click="loadMoreSessions"
+              >
+                Load more ({{ sessionsTotal - sessions.length }} remaining)
+              </n-button>
+            </div>
+          </template>
           <n-empty v-else description="No sessions" style="padding: 24px 0" />
         </NScrollbar>
       </div>
     </NLayoutSider>
 
     <NLayoutContent>
-      <!-- Empty state when nothing selected -->
-      <div v-if="!selectedSessionId" class="flex flex-col items-center justify-center h-full">
-        <n-empty description="Select a session or create a new one">
+      <div v-if="!selectedSessionId && !chatMessages.length" class="flex flex-col items-center justify-center h-full">
+        <n-empty description="Start a new chat to begin">
           <template #extra>
-            <n-button type="primary" @click="createSession">
+            <n-button type="primary" @click="newSession">
               <template #icon><n-icon><AddOutline /></n-icon></template>
               New Session
             </n-button>
@@ -615,9 +537,7 @@ onBeforeUnmount(() => {
         </n-button>
       </div>
 
-      <!-- Messages box — matches ChatMessages.vue structure -->
       <div v-else class="messages-box flex flex-col items-stretch justify-stretch">
-        <!-- Header — bg-gray-100 dark:bg-gray-700 like theme -->
         <header class="send-message p-3 bg-gray-100 dark:bg-gray-700 flex justify-between">
           <div class="flex items-center">
             <n-button
@@ -631,17 +551,16 @@ onBeforeUnmount(() => {
               <template #icon><n-icon><MenuOutline /></n-icon></template>
             </n-button>
             <div class="flex flex-col">
-              <span class="text-gray-800 dark:text-gray-200">{{ selectedSessionTitle }}</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">{{ selectedSessionId.substring(0, 16) }}</span>
+              <span class="text-gray-800 dark:text-gray-200">
+                {{ selectedSessionId ? 'Chat' : 'New chat' }}
+              </span>
+              <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">
+                {{ selectedSessionTitle || '—' }}
+              </span>
             </div>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="status-dot" :class="{ connected: chatConnected }"></span>
-            <span class="text-xs text-gray-500 dark:text-gray-400">{{ chatConnected ? 'Connected' : 'Disconnected' }}</span>
           </div>
         </header>
 
-        <!-- Chat content area — flex-1 with inner scrollbar -->
         <section class="flex flex-col flex-1 min-h-0">
           <div class="flex-1 items-end flex-col justify-end min-h-0">
             <n-scrollbar ref="messagesScrollRef">
@@ -650,7 +569,6 @@ onBeforeUnmount(() => {
                 <template v-else>
                   <template v-for="(msg, i) in chatMessages" :key="i">
                     <template v-for="(part, pi) in msg.orderedParts" :key="`${i}-${pi}`">
-                      <!-- Thinking — full width, outside bubbles -->
                       <div v-if="part.kind === 'thinking'" class="thinking-row">
                         <div
                           class="detail-block thinking"
@@ -670,7 +588,6 @@ onBeforeUnmount(() => {
                         </div>
                       </div>
 
-                      <!-- Tool — full width, outside bubbles -->
                       <div v-else-if="part.kind === 'tool'" class="thinking-row">
                         <div
                           class="detail-block tool"
@@ -688,9 +605,8 @@ onBeforeUnmount(() => {
                         </div>
                       </div>
 
-                      <!-- Text bubble -->
                       <div
-                        v-else-if="part.kind === 'text'"
+                        v-else
                         class="chat-message flex flex-col gap-2 p-3 bg-gray-100 dark:bg-gray-700"
                         :class="{
                           'self-message': msg.role === 'user',
@@ -700,35 +616,9 @@ onBeforeUnmount(() => {
                         <MarkdownContent v-if="msg.role === 'assistant'" :content="part.content" :streaming="!!msg.streaming" />
                         <span v-else style="white-space: pre-wrap; word-break: break-word;">{{ part.content }}</span>
                       </div>
-
-                      <!-- File/snapshot — bubble with collapsible detail block -->
-                      <div
-                        v-else
-                        class="chat-message flex flex-col gap-2 p-3 bg-gray-100 dark:bg-gray-700"
-                        :class="{
-                          'self-message': msg.role === 'user',
-                          'last': isLastInGroup(i) && isLastBubblePart(msg, pi),
-                        }"
-                      >
-                        <div
-                          class="detail-block"
-                          :class="[part.kind, { expanded: part.expanded }]"
-                          @click.stop="togglePart(part)"
-                        >
-                          <div class="detail-header">
-                            <n-icon size="14" class="detail-chevron"><ChevronForwardOutline /></n-icon>
-                            <span class="detail-label">{{ part.label }}</span>
-                            <span v-if="!part.expanded" class="detail-preview">
-                              {{ part.content.substring(0, 80) }}{{ part.content.length > 80 ? '...' : '' }}
-                            </span>
-                          </div>
-                          <div v-if="part.expanded" class="detail-body">{{ part.content }}</div>
-                        </div>
-                      </div>
                     </template>
                   </template>
 
-                  <!-- Typing indicator -->
                   <div
                     v-if="chatLoading && (!chatMessages.length || !chatMessages[chatMessages.length - 1]?.streaming)"
                     class="chat-message flex flex-col gap-2 p-3 bg-gray-100 dark:bg-gray-700"
@@ -740,17 +630,16 @@ onBeforeUnmount(() => {
             </n-scrollbar>
           </div>
 
-          <!-- Input bar — matches theme send-message section -->
           <section class="send-message p-4 bg-gray-100 dark:bg-gray-700 flex items-center">
             <input
               v-model="chatInput"
               placeholder="Write Message"
               class="message-input flex-1"
-              :disabled="!chatConnected || chatLoading"
+              :disabled="chatLoading"
               @keydown="handleInputKeydown"
             >
             <n-button
-              :disabled="!chatInput.trim() || !chatConnected || chatLoading"
+              :disabled="!chatInput.trim() || chatLoading"
               text
               type="primary"
               @click="sendMessage"
@@ -770,14 +659,10 @@ onBeforeUnmount(() => {
 // =============================================
 // Layout — matches ChatApp.vue from YummyAdmin theme
 // =============================================
-// The route uses meta.fullScreen which removes padding/max-width
-// from AppLayout (same as theme's layout: wide).
-
 .n-layout {
   padding: 0;
 }
 
-// Exact values from theme ChatApp.vue
 .chat-layout {
   height: calc(100vh - 30px);
 }
@@ -786,7 +671,6 @@ onBeforeUnmount(() => {
   height: calc(100vh - 150px);
 }
 
-// Sidebar list item styling — matches ChatList.vue
 .session-delete-btn {
   opacity: 0;
   transition: opacity 0.15s;
@@ -796,7 +680,6 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 
-// Match ChatList.vue .selected
 .selected {
   font-weight: bold;
   background: var(--n-merged-color-hover);
@@ -818,7 +701,6 @@ onBeforeUnmount(() => {
 // =============================================
 // Messages box — matches ChatMessages.vue exactly
 // =============================================
-// Exact value from theme ChatMessages.vue
 .messages-box {
   height: calc(100% - 51px);
 
@@ -832,19 +714,6 @@ onBeforeUnmount(() => {
   }
 }
 
-// Status dot
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #aaa;
-  transition: background 0.2s;
-
-  &.connected {
-    background: #4ade80;
-  }
-}
-
 // =============================================
 // Message bubbles — matches MessageItem.vue exactly
 // =============================================
@@ -855,7 +724,6 @@ onBeforeUnmount(() => {
   }
 }
 
-// Constrain width so code blocks scroll instead of expanding the bubble off-screen.
 .chat-message {
   --current-color: #f3f4f6;
   --self-background: #e0f7fa;
@@ -932,13 +800,11 @@ onBeforeUnmount(() => {
   }
 }
 
-// ---- Thinking row — full width, between bubbles ----
 .thinking-row {
   width: 100%;
   align-self: stretch;
 }
 
-// ---- Collapsible detail blocks ----
 .detail-block {
   cursor: pointer;
   background: var(--chat-thinking-bg);
@@ -955,8 +821,6 @@ onBeforeUnmount(() => {
 
   &.thinking { border-left-color: #a78bfa; }
   &.tool { border-left-color: #f59e0b; }
-  &.file { border-left-color: #3b82f6; }
-  &.snapshot { border-left-color: #10b981; }
 }
 
 .detail-header {
@@ -1018,12 +882,10 @@ onBeforeUnmount(() => {
   max-height: none;
 }
 
-// Inside-bubble detail blocks need margin
 .chat-message .detail-block {
   margin-bottom: 4px;
 }
 
-// ---- Typing indicator ----
 .typing-indicator {
   display: flex;
   gap: 4px;

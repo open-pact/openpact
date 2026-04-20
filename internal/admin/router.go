@@ -3,10 +3,13 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	version "github.com/open-pact/openpact"
+	"github.com/stack-bound/stackllm/session"
 )
 
 // Config holds the admin server configuration.
@@ -19,7 +22,6 @@ type Config struct {
 	Allowlist     []string
 	AccessExpiry  time.Duration
 	RefreshExpiry time.Duration
-	EngineType    string // "opencode"
 }
 
 // DefaultConfig returns a default configuration.
@@ -35,20 +37,22 @@ func DefaultConfig() Config {
 
 // Server is the admin HTTP server.
 type Server struct {
-	config             Config
-	users              *UserStore
-	scripts            *ScriptStore
-	jwt                *JWTManager
-	setupHandler       *SetupHandler
-	sessionHandler     *SessionHandler
-	scriptHandlers     *ScriptHandlers
-	engineAuthHandlers *EngineAuthHandlers
-	secretHandlers     *SecretHandlers
-	aiSessionHandlers  *SessionHandlers
-	providerHandlers   *ProviderHandlers
-	scheduleStore      *ScheduleStore
-	scheduleHandlers   *ScheduleHandlers
-	secureCookie       bool
+	config           Config
+	users            *UserStore
+	scripts          *ScriptStore
+	jwt              *JWTManager
+	setupHandler     *SetupHandler
+	sessionHandler   *SessionHandler
+	scriptHandlers   *ScriptHandlers
+	secretHandlers   *SecretHandlers
+	providerHandlers *ProviderHandlers
+	scheduleStore    *ScheduleStore
+	scheduleHandlers *ScheduleHandlers
+	configHandlers   *ConfigHandlers
+	engineHandler    http.Handler // stackllm web.ManagedHandler, mounted under /api/engine/
+	engineSessions   *EngineSessionsHandler
+	sessionStore     session.SessionStore // set alongside engineHandler
+	secureCookie     bool
 }
 
 // NewServer creates a new admin server.
@@ -66,13 +70,11 @@ func NewServer(config Config) (*Server, error) {
 		Issuer:        "openpact",
 	})
 
-	// Initialize user store
 	users, err := NewUserStore(config.DataDir)
 	if err != nil {
 		return nil, err
 	}
 
-	// Initialize script store
 	scripts, err := NewScriptStore(config.ScriptsDir, config.DataDir, config.Allowlist)
 	if err != nil {
 		return nil, err
@@ -80,42 +82,67 @@ func NewServer(config Config) (*Server, error) {
 
 	secureCookie := ShouldUseSecureCookies(config.Bind)
 
-	engineType := config.EngineType
-	if engineType == "" {
-		engineType = "opencode"
-	}
-
 	secretStore := NewSecretStore(config.DataDir)
 	providerStore := NewProviderStore(config.DataDir)
 	scheduleStore := NewScheduleStore(config.DataDir)
 
-	return &Server{
-		config:             config,
-		users:              users,
-		scripts:            scripts,
-		jwt:                jwt,
-		setupHandler:       NewSetupHandler(users, config.DataDir, config.AIDataDir),
-		sessionHandler:     NewSessionHandler(users, jwt, secureCookie),
-		scriptHandlers:     NewScriptHandlers(scripts),
-		engineAuthHandlers: NewEngineAuthHandlers(engineType),
-		secretHandlers:     NewSecretHandlers(secretStore, nil),
-		providerHandlers:   NewProviderHandlers(providerStore),
-		scheduleStore:      scheduleStore,
-		scheduleHandlers:   NewScheduleHandlers(scheduleStore),
-		secureCookie:       secureCookie,
-	}, nil
+	s := &Server{
+		config:           config,
+		users:            users,
+		scripts:          scripts,
+		jwt:              jwt,
+		setupHandler:     NewSetupHandler(users, config.DataDir, config.AIDataDir),
+		sessionHandler:   NewSessionHandler(users, jwt, secureCookie),
+		scriptHandlers:   NewScriptHandlers(scripts),
+		secretHandlers:   NewSecretHandlers(secretStore, nil),
+		providerHandlers: NewProviderHandlers(providerStore),
+		scheduleStore:    scheduleStore,
+		scheduleHandlers: NewScheduleHandlers(scheduleStore),
+		configHandlers:   NewConfigHandlers(config.DataDir),
+		secureCookie:     secureCookie,
+	}
+	s.engineSessions = NewEngineSessionsHandler(s.getSessionStore)
+	return s, nil
 }
 
-// Handler returns the HTTP handler for the admin API.
+// getSessionStore returns the live session store (nil before SetEngineHandler
+// has been called). Captured by EngineSessionsHandler so it resolves the
+// store at request time rather than at server-construction time.
+func (s *Server) getSessionStore() session.SessionStore {
+	return s.sessionStore
+}
+
+// SetEngineHandler installs the stackllm web.ManagedHandler. Once set, it
+// is mounted at /api/engine/ and drives provider login, model selection
+// and SSE chat. Called from main after the orchestrator builds the stack.
+func (s *Server) SetEngineHandler(h http.Handler) {
+	s.engineHandler = h
+}
+
+// SetSessionStore wires the session store that backs GET /api/engine/sessions.
+// Called from main alongside SetEngineHandler.
+func (s *Server) SetSessionStore(store session.SessionStore) {
+	s.sessionStore = store
+}
+
+// Handler returns the HTTP handler for the admin API (no SPA).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	return RequireSetupMiddleware(s.users, s.config.DataDir)(mux)
+}
 
+// registerAPIRoutes registers every /api/* handler on the mux. Shared by
+// Handler() and HandlerWithUI() so the dual-handler footgun (adding a
+// route to one but not the other) can never happen.
+func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	// Version endpoint (no auth required)
 	mux.HandleFunc("/api/version", handleVersion)
 
 	// Setup endpoints (no auth required, but blocked after setup complete)
 	mux.HandleFunc("/api/setup/status", s.setupHandler.Status)
 	mux.HandleFunc("/api/setup/profile", s.setupHandler.Profile)
+	mux.HandleFunc("/api/setup/provider", s.setupHandler.Provider)
 	mux.HandleFunc("/api/setup", s.setupHandler.Setup)
 
 	// Auth endpoints (no auth required)
@@ -128,19 +155,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/scripts", s.withAuth(s.handleScripts))
 	mux.HandleFunc("/api/scripts/", s.withAuth(s.handleScriptByName))
 
-	// Engine auth endpoints
-	mux.HandleFunc("/api/engine/auth/terminal", s.withAuthWS(s.engineAuthHandlers.Terminal))
-	mux.HandleFunc("/api/engine/auth", s.withAuth(s.engineAuthHandlers.HandleEngineAuth))
-
 	// Secret management endpoints
 	mux.HandleFunc("/api/secrets", s.withAuth(s.handleSecrets))
 	mux.HandleFunc("/api/secrets/", s.withAuth(s.handleSecretByName))
-
-	// AI session management endpoints
-	s.registerSessionRoutes(mux)
-
-	// Model management endpoints
-	s.registerModelRoutes(mux)
 
 	// Provider management endpoints
 	s.registerProviderRoutes(mux)
@@ -148,14 +165,70 @@ func (s *Server) Handler() http.Handler {
 	// Schedule management endpoints
 	s.registerScheduleRoutes(mux)
 
-	// Apply setup middleware to the entire API
-	return RequireSetupMiddleware(s.users, s.config.DataDir)(mux)
+	// Advanced settings + integrations (engine + provider login live
+	// under /api/engine/ via the stackllm web.ManagedHandler).
+	mux.HandleFunc("/api/config/advanced", s.withAuth(s.configHandlers.HandleAdvanced))
+	mux.HandleFunc("/api/config/integrations", s.withAuth(s.configHandlers.HandleIntegrations))
+
+	// Paginated session list. Sits in front of the /api/engine/ subtree
+	// mount so the fixed path wins over the prefix match. Always
+	// auth-gated — the list is post-setup only, never public.
+	mux.HandleFunc("/api/engine/sessions", s.withAuth(s.engineSessions.List))
+
+	// Stackllm ManagedHandler mount. After setup is complete the
+	// endpoints require a bearer token; during the provider-login step
+	// of setup the user has no token yet, so the setup middleware
+	// allows the path through publicly. See HandlerWithUI.
+	//
+	// IMPORTANT (dual-handler rule, CLAUDE.md): this mount must appear
+	// in both Handler() and HandlerWithUI(). registerAPIRoutes is the
+	// single source of truth that both call.
+	mux.HandleFunc("/api/engine/", s.withEngineAuth(func(w http.ResponseWriter, r *http.Request) {
+		if s.engineHandler == nil {
+			http.Error(w, `{"error":"engine handler not wired"}`, http.StatusServiceUnavailable)
+			return
+		}
+		http.StripPrefix("/api/engine", s.engineHandler).ServeHTTP(w, r)
+	}))
+}
+
+// withEngineAuth wraps the /api/engine/ mount. When setup is fully
+// complete (users exist AND the provider step has been marked done) the
+// user is expected to have a bearer token and we fall through to the
+// standard withAuth. Before that — specifically during step 3 of the
+// setup wizard — the handler is publicly reachable, so the user can
+// sign in to their first provider without a token.
+func (s *Server) withEngineAuth(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.providerSetupComplete() {
+			s.withAuth(handler)(w, r)
+			return
+		}
+		handler(w, r)
+	}
+}
+
+// providerSetupComplete reports whether the provider step of setup has
+// been finished. Any read error is treated as "incomplete" so we fail
+// open for the setup flow rather than locking the user out.
+func (s *Server) providerSetupComplete() bool {
+	if !s.users.HasUsers() {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(s.config.DataDir, "setup_state.json"))
+	if err != nil {
+		return false
+	}
+	var state SetupState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false
+	}
+	return state.ProviderComplete
 }
 
 // withAuth wraps a handler with authentication middleware.
 func (s *Server) withAuth(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract and validate access token
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, `{"error":"unauthorized","message":"Authorization header required"}`, http.StatusUnauthorized)
@@ -169,42 +242,6 @@ func (s *Server) withAuth(handler http.HandlerFunc) http.HandlerFunc {
 		}
 
 		claims, err := s.jwt.ValidateAccessToken(parts[1])
-		if err != nil {
-			http.Error(w, `{"error":"unauthorized","message":"Invalid or expired token"}`, http.StatusUnauthorized)
-			return
-		}
-
-		// Add username to context and call handler
-		r = r.WithContext(WithUsername(r.Context(), claims.Username))
-		handler(w, r)
-	}
-}
-
-// withAuthWS wraps a handler with authentication that supports both
-// Bearer tokens and query parameter tokens (for WebSocket connections).
-func (s *Server) withAuthWS(handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Try Authorization header first
-		token := ""
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				token = parts[1]
-			}
-		}
-
-		// Fall back to query parameter (for WebSocket)
-		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
-
-		if token == "" {
-			http.Error(w, `{"error":"unauthorized","message":"Token required"}`, http.StatusUnauthorized)
-			return
-		}
-
-		claims, err := s.jwt.ValidateAccessToken(token)
 		if err != nil {
 			http.Error(w, `{"error":"unauthorized","message":"Invalid or expired token"}`, http.StatusUnauthorized)
 			return
@@ -231,7 +268,6 @@ func (s *Server) handleScripts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleScriptByName(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	// Check for action endpoints
 	if strings.HasSuffix(path, "/approve") {
 		if r.Method == http.MethodPost {
 			s.scriptHandlers.ApproveScript(w, r)
@@ -250,7 +286,6 @@ func (s *Server) handleScriptByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Standard CRUD operations
 	switch r.Method {
 	case http.MethodGet:
 		s.scriptHandlers.GetScript(w, r)
@@ -269,28 +304,17 @@ func (s *Server) SetupRequired() bool {
 }
 
 // Users returns the user store.
-func (s *Server) Users() *UserStore {
-	return s.users
-}
+func (s *Server) Users() *UserStore { return s.users }
 
 // Scripts returns the script store.
-func (s *Server) Scripts() *ScriptStore {
-	return s.scripts
-}
+func (s *Server) Scripts() *ScriptStore { return s.scripts }
 
 // SecretStore returns the secret store.
-func (s *Server) SecretStore() *SecretStore {
-	return s.secretHandlers.store
-}
+func (s *Server) SecretStore() *SecretStore { return s.secretHandlers.store }
 
 // SetOnSecretsChanged sets the callback for secret changes.
 func (s *Server) SetOnSecretsChanged(fn func()) {
 	s.secretHandlers.onChange = fn
-}
-
-// SetSessionAPI sets the session API for AI session management endpoints.
-func (s *Server) SetSessionAPI(api SessionAPI) {
-	s.aiSessionHandlers = NewSessionHandlers(api)
 }
 
 // handleSecrets routes /api/secrets requests.
@@ -303,45 +327,6 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 	}
-}
-
-// registerSessionRoutes adds AI session routes to a mux.
-// Routes are always registered; they return 503 if the session API hasn't been wired yet.
-func (s *Server) registerSessionRoutes(mux *http.ServeMux) {
-	sessionGuard := func(handler func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if s.aiSessionHandlers == nil {
-				http.Error(w, `{"error":"session API not available"}`, http.StatusServiceUnavailable)
-				return
-			}
-			handler(w, r)
-		}
-	}
-	mux.HandleFunc("/api/sessions", s.withAuth(sessionGuard(func(w http.ResponseWriter, r *http.Request) {
-		s.aiSessionHandlers.HandleSessions(w, r)
-	})))
-	mux.HandleFunc("/api/sessions/", s.withAuthWS(sessionGuard(func(w http.ResponseWriter, r *http.Request) {
-		s.aiSessionHandlers.HandleSessionByID(w, r)
-	})))
-}
-
-// registerModelRoutes adds model management routes to a mux.
-func (s *Server) registerModelRoutes(mux *http.ServeMux) {
-	sessionGuard := func(handler func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if s.aiSessionHandlers == nil {
-				http.Error(w, `{"error":"session API not available"}`, http.StatusServiceUnavailable)
-				return
-			}
-			handler(w, r)
-		}
-	}
-	mux.HandleFunc("/api/models/default", s.withAuth(sessionGuard(func(w http.ResponseWriter, r *http.Request) {
-		s.aiSessionHandlers.SetDefaultModel(w, r)
-	})))
-	mux.HandleFunc("/api/models", s.withAuth(sessionGuard(func(w http.ResponseWriter, r *http.Request) {
-		s.aiSessionHandlers.ListModels(w, r)
-	})))
 }
 
 // registerProviderRoutes adds provider management routes to a mux.
@@ -365,14 +350,10 @@ func (s *Server) SetChannelModeAPI(api ChannelModeAPI) {
 }
 
 // ProviderStore returns the provider store.
-func (s *Server) ProviderStore() *ProviderStore {
-	return s.providerHandlers.store
-}
+func (s *Server) ProviderStore() *ProviderStore { return s.providerHandlers.store }
 
 // ScheduleStore returns the schedule store.
-func (s *Server) ScheduleStore() *ScheduleStore {
-	return s.scheduleStore
-}
+func (s *Server) ScheduleStore() *ScheduleStore { return s.scheduleStore }
 
 // SetSchedulerAPI sets the scheduler API for schedule management.
 func (s *Server) SetSchedulerAPI(api SchedulerAPI) {

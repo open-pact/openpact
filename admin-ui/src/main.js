@@ -17,12 +17,13 @@ import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
 import ScriptsView from './views/ScriptsView.vue'
 import ScriptEditorView from './views/ScriptEditorView.vue'
-import EngineAuthView from './views/EngineAuthView.vue'
+import EngineView from './views/EngineView.vue'
 import SecretsView from './views/SecretsView.vue'
 import SessionsView from './views/SessionsView.vue'
 import ProvidersView from './views/ProvidersView.vue'
 import SchedulesView from './views/SchedulesView.vue'
-import SettingsView from './views/SettingsView.vue'
+import AdvancedSettingsView from './views/AdvancedSettingsView.vue'
+import IntegrationsView from './views/IntegrationsView.vue'
 
 const routes = [
   { path: '/setup', name: 'setup', component: SetupView, meta: { requiresAuth: false } },
@@ -38,8 +39,9 @@ const routes = [
       { path: 'providers', name: 'providers', component: ProvidersView, meta: { requiresAuth: true, title: 'Providers' } },
       { path: 'secrets', name: 'secrets', component: SecretsView, meta: { requiresAuth: true, title: 'Secrets' } },
       { path: 'schedules', name: 'schedules', component: SchedulesView, meta: { requiresAuth: true, title: 'Schedules' } },
-      { path: 'engine-auth', name: 'engine-auth', component: EngineAuthView, meta: { requiresAuth: true, title: 'Engine Auth' } },
-      { path: 'settings', name: 'settings', component: SettingsView, meta: { requiresAuth: true, title: 'Settings' } },
+      { path: 'engine', name: 'engine', component: EngineView, meta: { requiresAuth: true, title: 'Engine' } },
+      { path: 'integrations', name: 'integrations', component: IntegrationsView, meta: { requiresAuth: true, title: 'Integrations' } },
+      { path: 'settings/advanced', name: 'advanced-settings', component: AdvancedSettingsView, meta: { requiresAuth: true, title: 'Advanced settings' } },
     ],
   },
 ]
@@ -49,7 +51,6 @@ const router = createRouter({
   routes,
 })
 
-// Navigation guard (unchanged logic)
 router.beforeEach(async (to, from, next) => {
   const auth = useAuth()
 

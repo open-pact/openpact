@@ -7,24 +7,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/open-pact/openpact/internal/admin"
-	"github.com/open-pact/openpact/internal/auth"
 	"github.com/open-pact/openpact/internal/chat"
 	"github.com/open-pact/openpact/internal/config"
 	opcontext "github.com/open-pact/openpact/internal/context"
 	"github.com/open-pact/openpact/internal/engine"
 	"github.com/open-pact/openpact/internal/mcp"
-	"github.com/open-pact/openpact/internal/scheduler"
 	"github.com/open-pact/openpact/internal/providers/discord"
 	"github.com/open-pact/openpact/internal/providers/slack"
 	"github.com/open-pact/openpact/internal/providers/telegram"
+	"github.com/open-pact/openpact/internal/scheduler"
+	"github.com/stack-bound/stackllm/agent"
+	"github.com/stack-bound/stackllm/conversation"
+	"github.com/stack-bound/stackllm/profile"
+	"github.com/stack-bound/stackllm/session"
 )
 
 // Orchestrator coordinates all OpenPact components
@@ -34,24 +35,25 @@ type Orchestrator struct {
 	// Components
 	contextLoader *opcontext.Loader
 	mcpServer     *mcp.Server
-	engine        engine.Engine
+	stack         *engine.Stack
 	scriptStore   *admin.ScriptStore // Script approval store (optional)
 	providerStore *admin.ProviderStore
 	modelStore    *admin.ModelPreferenceStore
 	scheduler     *scheduler.Scheduler
-
-	// MCP HTTP server (in-process, remote transport for OpenCode)
-	mcpHTTPServer *http.Server
-	mcpToken      string
 
 	// Dynamic provider management
 	providerMu     sync.RWMutex
 	providers      map[string]chat.Provider
 	providerStatus map[string]admin.ProviderStatusInfo
 
-	// Per-channel session tracking: "provider:channelID" -> sessionID
+	// Per-channel session tracking: "provider:channelID" -> stackllm session UUID
 	channelSessions map[string]string
 	sessionMu       sync.RWMutex
+
+	// Per-session mutex, so concurrent messages to the same channel serialize
+	// through the agent loop. Acquired in handleChatMessage.
+	sessionLocksMu sync.Mutex
+	sessionLocks   map[string]*sync.Mutex
 
 	// Per-channel detail mode: "provider:channelID" -> mode (simple/thinking/tools/full)
 	channelModes map[string]string
@@ -85,6 +87,7 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		providerStore:   providerStore,
 		channelSessions: make(map[string]string),
 		channelModes:    make(map[string]string),
+		sessionLocks:    make(map[string]*sync.Mutex),
 		providers:       make(map[string]chat.Provider),
 		providerStatus:  make(map[string]admin.ProviderStatusInfo),
 	}
@@ -125,7 +128,8 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		}
 	}
 
-	// Initialize MCP server (in-process, for admin API tool introspection)
+	// Initialize MCP server (used only for registering tool handlers — the
+	// stackllm engine adapter copies each tool into a native Go registry).
 	o.mcpServer = mcp.NewServer(nil, nil)
 
 	// Build registration config for MCP tools
@@ -194,7 +198,8 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 	o.scheduler = scheduler.New(scheduleStore, schedCfg)
 	regCfg.Scheduler = o
 
-	// Register all tools
+	// Register all tools on the MCP server — this is the registry the
+	// stackllm adapter will read from when building the tool registry.
 	mcp.RegisterAllTools(o.mcpServer, regCfg)
 
 	// Store script store reference for admin API
@@ -207,55 +212,67 @@ func New(cfg *config.Config, providerStore *admin.ProviderStore) (*Orchestrator,
 		}
 	}
 
-	// Check engine authentication
-	authStatus := auth.CheckAuth(cfg.Engine.Type)
-	if !authStatus.Authenticated {
-		log.Printf("WARNING: Engine authentication not configured for %s.", cfg.Engine.Type)
-		log.Printf("Visit the admin UI to sign in, or run: openpact auth %s", cfg.Engine.Type)
-	}
-
-	// Initialize engine (connect-only — OpenCode is managed by the entrypoint)
-	engineCfg := engine.Config{
-		Type:     cfg.Engine.Type,
-		Provider: cfg.Engine.Provider,
-		Model:    cfg.Engine.Model,
-		WorkDir:  cfg.Workspace.Path,
-		Port:     cfg.Engine.Port,
-		Hostname: cfg.Engine.Hostname,
-		Password: cfg.Engine.Password,
-	}
-	eng, err := engine.New(engineCfg)
+	// Build the stackllm stack — this copies every MCP tool into a native
+	// Go registry, opens the SQLite session store, and wires the
+	// web.ManagedHandler that the admin server will mount at /api/engine/.
+	stack, err := engine.New(engine.Config{
+		WorkspacePath: cfg.Workspace.Path,
+		DBPath:        cfg.Engine.DBPath,
+		Tools:         o.mcpServer,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create engine: %w", err)
+		return nil, fmt.Errorf("failed to build engine stack: %w", err)
 	}
+	o.stack = stack
 
-	// Load and set system prompt
+	// Load system prompt from SOUL/USER/MEMORY
 	systemPrompt, err := o.contextLoader.Load()
 	if err != nil {
 		log.Printf("Warning: failed to load context: %v", err)
 	}
 	if systemPrompt != "" {
-		eng.SetSystemPrompt(systemPrompt)
+		stack.SetSystemPrompt(systemPrompt)
 	}
 
-	o.engine = eng
-
-	// Initialize model preference store and apply saved preference
+	// Initialize model preference store. Unlike the old OpenCode setup,
+	// the default model now lives in stackllm's own config store — this
+	// legacy file exists only to seed stackllm's store on first run if
+	// the admin previously picked a model. The admin UI writes directly
+	// to stackllm going forward.
 	o.modelStore = admin.NewModelPreferenceStore(cfg.Workspace.DataDir())
-	if pref, err := o.modelStore.Get(); err != nil {
-		log.Printf("Warning: failed to load model preference: %v", err)
-	} else if pref != nil {
-		eng.SetDefaultModel(pref.Provider, pref.Model)
-		log.Printf("Restored default model: %s/%s", pref.Provider, pref.Model)
-	}
-
-	// Start MCP HTTP server immediately so it's ready before OpenCode connects.
-	// Tools are already registered above, so the server can serve requests.
-	if err := o.startMCPHTTPServer(); err != nil {
-		return nil, fmt.Errorf("failed to start MCP HTTP server: %w", err)
-	}
+	o.seedLegacyModelPreference()
 
 	return o, nil
+}
+
+// Stack returns the stackllm stack (engine.Stack). Exposed so the admin
+// server can mount stack.Handler and call into stack.Manager for the
+// advanced-settings views.
+func (o *Orchestrator) Stack() *engine.Stack {
+	return o.stack
+}
+
+// seedLegacyModelPreference copies a pre-migration model preference into
+// stackllm's config store if nothing is set yet. Best-effort — failure is
+// logged and ignored.
+func (o *Orchestrator) seedLegacyModelPreference() {
+	if o.stack == nil || o.modelStore == nil {
+		return
+	}
+	ctx := context.Background()
+	if _, ok, _ := o.stack.Manager.Default(ctx); ok {
+		return
+	}
+	pref, err := o.modelStore.Get()
+	if err != nil || pref == nil {
+		return
+	}
+	info := profile.ModelInfo{Provider: pref.Provider, Model: pref.Model}
+	if err := o.stack.Manager.SetDefaultModel(info); err != nil {
+		log.Printf("Warning: failed to seed default model: %v", err)
+		return
+	}
+	log.Printf("Seeded stackllm default model from legacy preference: %s/%s", pref.Provider, pref.Model)
 }
 
 // StartProvider starts a single chat provider by name using config from the store.
@@ -324,7 +341,6 @@ func (o *Orchestrator) StopProvider(name string) error {
 
 // RestartProvider stops then starts a provider.
 func (o *Orchestrator) RestartProvider(name string) error {
-	// Stop if running (ignore error if not running)
 	o.providerMu.RLock()
 	_, isRunning := o.providers[name]
 	o.providerMu.RUnlock()
@@ -444,17 +460,11 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	log.Println("OpenPact orchestrator starting...")
 
-	// Start engine (launches opencode serve)
-	if err := o.engine.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start engine: %w", err)
-	}
-	log.Printf("Engine started: %s", o.cfg.Engine.Type)
-
 	// Load persisted sessions and modes from disk
 	o.loadChannelSessions()
 	o.loadChannelModes()
 
-	// Wire scheduler APIs now that engine is ready
+	// Wire scheduler APIs now that the stack is ready
 	o.scheduler.SetEngineAPI(o)
 	o.scheduler.SetChatAPI(o)
 
@@ -496,7 +506,6 @@ func (o *Orchestrator) startEnabledProviders() {
 
 		if err := o.StartProvider(cfg.Name); err != nil {
 			log.Printf("Warning: failed to start provider %s: %v", cfg.Name, err)
-			// Status is already set to error by StartProvider
 		}
 	}
 }
@@ -517,12 +526,10 @@ func (o *Orchestrator) shutdown() error {
 
 	var errs []error
 
-	// Stop scheduler
 	if o.scheduler != nil {
 		o.scheduler.Stop()
 	}
 
-	// Stop all running chat providers
 	o.providerMu.Lock()
 	for name, p := range o.providers {
 		if err := p.Stop(); err != nil {
@@ -532,21 +539,12 @@ func (o *Orchestrator) shutdown() error {
 	o.providers = make(map[string]chat.Provider)
 	o.providerMu.Unlock()
 
-	// Stop engine
-	if o.engine != nil {
-		if err := o.engine.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("engine stop: %w", err))
+	if o.stack != nil {
+		if err := o.stack.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("engine close: %w", err))
 		}
 	}
 
-	// Stop MCP HTTP server
-	if o.mcpHTTPServer != nil {
-		if err := o.mcpHTTPServer.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("mcp http stop: %w", err))
-		}
-	}
-
-	// Stop MCP server
 	if o.mcpServer != nil {
 		o.mcpServer.Stop()
 	}
@@ -563,193 +561,212 @@ func (o *Orchestrator) shutdown() error {
 	return nil
 }
 
+// sessionLock returns a per-session mutex, creating one if needed.
+func (o *Orchestrator) sessionLock(sessionID string) *sync.Mutex {
+	o.sessionLocksMu.Lock()
+	defer o.sessionLocksMu.Unlock()
+	m, ok := o.sessionLocks[sessionID]
+	if !ok {
+		m = &sync.Mutex{}
+		o.sessionLocks[sessionID] = m
+	}
+	return m
+}
+
 // handleChatMessage processes incoming chat messages from any provider.
+//
+// Per the migration plan, this path:
+//  1. Looks up (or creates) a stackllm session keyed by (provider, channelID).
+//  2. Acquires the per-session mutex so concurrent messages serialize.
+//  3. Loads session messages from SQLite, prepends the SOUL/USER/MEMORY
+//     system prompt if the history is empty, and appends the user turn.
+//  4. Builds a fresh provider from the persisted default via
+//     profile.Manager.LoadDefault and runs an agent.Agent to completion.
+//  5. Persists the updated messages and returns the assembled response.
 func (o *Orchestrator) handleChatMessage(provider, channelID, userID, content string) (*chat.ChatResponse, error) {
 	log.Printf("[%s] Message from %s in %s: %s", provider, userID, channelID, content)
 
-	// Get or create per-channel session
-	sessionID := o.GetChannelSession(provider, channelID)
-	if sessionID == "" {
-		session, err := o.engine.CreateSession()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create session: %w", err)
-		}
-		sessionID = session.ID
-		o.SetChannelSession(provider, channelID, sessionID)
-		log.Printf("Created new session %s for %s:%s", sessionID, provider, channelID)
+	sessionID, err := o.ensureChannelSession(provider, channelID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Look up the channel's detail mode
 	mode := o.GetChannelMode(provider, channelID)
-	wantTools := mode == chat.ModeTools || mode == chat.ModeFull
 	wantThinking := mode == chat.ModeThinking || mode == chat.ModeFull
+	wantTools := mode == chat.ModeTools || mode == chat.ModeFull
 
-	// Prepend source context so the AI knows the origin
-	contextPrefix := fmt.Sprintf("[via %s, channel:%s, user:%s]\n", provider, channelID, userID)
-
-	messages := []engine.Message{
-		{Role: "user", Content: contextPrefix + content},
-	}
+	lock := o.sessionLock(sessionID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	ctx := context.Background()
-	responses, err := o.engine.Send(ctx, sessionID, messages)
+
+	sess, err := o.stack.Sessions.Load(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("engine error: %w", err)
+		sess = session.New()
+		sess.ID = sessionID
 	}
 
-	// Accumulate response text. With SSE streaming, each text part event
-	// carries the FULL text (not a delta), and the same part ID may arrive
-	// multiple times (initial + finalized). Track parts by ID so updates
-	// replace rather than duplicate content.
-	textParts := make(map[string]string)     // partID → full text
-	thinkingParts := make(map[string]string) // partID → thinking text
-	var untaggedText string                  // fallback for responses without part IDs
-	firstContent := true
-
-	for resp := range responses {
-		if resp.Content != "" && firstContent {
-			log.Printf("[%s] AI response started for session %s", provider, sessionID)
-			firstContent = false
+	// If the session is empty, prepend the system prompt so the model sees
+	// SOUL/USER/MEMORY context. We check here (not at send time) because
+	// the system message should live at the head of the history forever,
+	// but we only want one copy.
+	if len(sess.Messages) == 0 {
+		if prompt := o.stack.SystemPrompt(); prompt != "" {
+			sess.AppendMessage(conversation.Message{
+				Role: conversation.RoleSystem,
+				Blocks: []conversation.Block{
+					{Type: conversation.BlockText, Text: prompt},
+				},
+			})
 		}
+	}
 
-		// Accumulate text content
-		if resp.Content != "" {
-			if resp.PartID != "" {
-				textParts[resp.PartID] = resp.Content
-			} else {
-				untaggedText += resp.Content
+	// Prepend source context so the AI knows the origin.
+	contextPrefix := fmt.Sprintf("[via %s, channel:%s, user:%s]\n", provider, channelID, userID)
+	sess.AppendMessage(conversation.Message{
+		Role: conversation.RoleUser,
+		Blocks: []conversation.Block{
+			{Type: conversation.BlockText, Text: contextPrefix + content},
+		},
+	})
+
+	info, ok, err := o.stack.Manager.Default(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load default model: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("no default model set — open the admin UI and pick one at /engine")
+	}
+	sess.Model = info.String()
+
+	prov, err := o.stack.Manager.LoadProviderForModel(ctx, info)
+	if err != nil {
+		return nil, fmt.Errorf("load provider for %s: %w", info.String(), err)
+	}
+
+	a := agent.New(prov,
+		agent.WithModel(info.Model),
+		agent.WithTools(o.stack.Tools),
+	)
+
+	events, err := a.Run(ctx, sess.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("agent run: %w", err)
+	}
+
+	// Accumulate streamed content. BlockDelta events carry incremental
+	// text; BlockEnd events carry the final block. We prefer the final
+	// block when available.
+	var (
+		textBuilder     strings.Builder
+		thinkingBuilder strings.Builder
+		toolCalls       []chat.ToolCallInfo
+	)
+
+	for ev := range events {
+		switch ev.Type {
+		case agent.EventBlockDelta:
+			// Use deltas only as a fallback — EventBlockEnd will overwrite
+			// if we see a full text block.
+			if ev.BlockType == conversation.BlockText {
+				textBuilder.WriteString(ev.Content)
+			} else if ev.BlockType == conversation.BlockThinking && wantThinking {
+				thinkingBuilder.WriteString(ev.Content)
 			}
-		}
-
-		// Accumulate thinking content
-		if wantThinking && resp.Thinking != "" {
-			if resp.PartID != "" {
-				thinkingParts[resp.PartID] = resp.Thinking
+		case agent.EventBlockEnd:
+			if ev.Block == nil {
+				continue
 			}
+			switch ev.Block.Type {
+			case conversation.BlockText:
+				// Replace accumulated deltas with the final text.
+				textBuilder.Reset()
+				textBuilder.WriteString(ev.Block.Text)
+			case conversation.BlockThinking:
+				if wantThinking {
+					thinkingBuilder.Reset()
+					thinkingBuilder.WriteString(ev.Block.Text)
+				}
+			case conversation.BlockToolUse:
+				if wantTools {
+					toolCalls = append(toolCalls, chat.ToolCallInfo{
+						Name:  ev.Block.ToolName,
+						Input: ev.Block.ToolArgsJSON,
+					})
+				}
+			}
+		case agent.EventToolResult:
+			if !wantTools {
+				continue
+			}
+			// Attach output to the most recent matching tool call.
+			if ev.ToolCall == nil {
+				continue
+			}
+			for i := len(toolCalls) - 1; i >= 0; i-- {
+				if toolCalls[i].Output == "" && toolCalls[i].Name == ev.ToolCall.Name {
+					toolCalls[i].Output = ev.ToolResult
+					break
+				}
+			}
+		case agent.EventComplete:
+			// Persist the authoritative message slice the agent built.
+			sess.Messages = append([]conversation.Message(nil), ev.Messages...)
+		case agent.EventError:
+			if len(ev.Messages) > 0 {
+				sess.Messages = append([]conversation.Message(nil), ev.Messages...)
+			}
+			if persistErr := o.stack.Sessions.Save(context.Background(), sess); persistErr != nil {
+				log.Printf("Warning: failed to save session after error: %v", persistErr)
+			}
+			return nil, ev.Err
 		}
 	}
 
-	// Build final text from deduplicated parts + any untagged content
-	var responseText string
-	for _, text := range textParts {
-		responseText += text
+	if err := o.stack.Sessions.Save(context.Background(), sess); err != nil {
+		log.Printf("Warning: failed to save session %s: %v", sessionID, err)
 	}
-	responseText += untaggedText
 
-	// Construct ChatResponse
-	result := &chat.ChatResponse{Text: responseText}
-
-	// Build thinking from deduplicated parts
+	result := &chat.ChatResponse{Text: textBuilder.String()}
 	if wantThinking {
-		var thinkingText string
-		for _, text := range thinkingParts {
-			thinkingText += text
-		}
-		// Some models (e.g. Gemini) emit literal \n escape sequences in reasoning text — strip them.
-		result.Thinking = strings.ReplaceAll(thinkingText, `\n`, "")
+		result.Thinking = strings.ReplaceAll(thinkingBuilder.String(), `\n`, "")
 	}
-
-	// Fetch resolved tool data from the engine's message history.
-	// SSE streaming only provides partial tool info (no input/output),
-	// so we fetch the complete resolved message parts after the stream ends.
-	if wantTools {
-		toolCalls := o.fetchResolvedToolCalls(sessionID)
-		if len(toolCalls) > 0 {
-			result.ToolCalls = toolCalls
-		}
+	if wantTools && len(toolCalls) > 0 {
+		result.ToolCalls = toolCalls
 	}
-
 	return result, nil
 }
 
-// fetchResolvedToolCalls fetches the most recent assistant message from the
-// engine and extracts tool call details from its resolved parts. This gives us
-// the full tool data (name, input, output) that SSE streaming doesn't include.
-func (o *Orchestrator) fetchResolvedToolCalls(sessionID string) []chat.ToolCallInfo {
-	messages, err := o.engine.GetMessages(sessionID, 10)
-	if err != nil {
-		log.Printf("[tools] Failed to fetch messages for session %s: %v", sessionID, err)
-		return nil
+// ensureChannelSession returns the session ID for a channel, creating a
+// new stackllm session if none is mapped yet. New sessions are named with
+// their chat-provider origin so the admin UI list shows "Discord: channel"
+// alongside direct-chat sessions rather than a bare UUID.
+func (o *Orchestrator) ensureChannelSession(provider, channelID string) (string, error) {
+	if sid := o.GetChannelSession(provider, channelID); sid != "" {
+		return sid, nil
 	}
-
-	log.Printf("[tools] Session %s: found %d messages", sessionID, len(messages))
-
-	// Find the last user message, then scan all assistant messages after it.
-	// OpenCode splits tool-calling turns into separate assistant messages:
-	// [user] → [assistant: tool call] → [assistant: text response]
-	lastUserIdx := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			lastUserIdx = i
-			break
-		}
+	sess := session.New()
+	sess.Name = channelSessionName(provider, channelID)
+	if err := o.stack.Sessions.Save(context.Background(), sess); err != nil {
+		return "", fmt.Errorf("create session: %w", err)
 	}
-
-	var toolCalls []chat.ToolCallInfo
-	start := lastUserIdx + 1
-	if start < 0 {
-		start = 0
-	}
-	for i := start; i < len(messages); i++ {
-		if messages[i].Role != "assistant" {
-			continue
-		}
-		for _, raw := range messages[i].Parts {
-			tc, ok := extractToolCall(raw)
-			if ok {
-				toolCalls = append(toolCalls, tc)
-			}
-		}
-	}
-
-	log.Printf("[tools] Session %s: extracted %d tool calls from %d assistant messages", sessionID, len(toolCalls), len(messages)-start)
-	return toolCalls
+	o.SetChannelSession(provider, channelID, sess.ID)
+	log.Printf("Created new session %s (%q) for %s:%s", sess.ID, sess.Name, provider, channelID)
+	return sess.ID, nil
 }
 
-// extractToolCall parses a raw resolved message part JSON to extract tool call info.
-// OpenCode's resolved parts use this structure:
-//
-//	{type: "tool", tool: "tool_name", state: {status: "...", input: {...}, output: "..."}}
-//
-// The tool field is a plain string (the tool name), and both input and output
-// live inside the state object.
-func extractToolCall(raw json.RawMessage) (chat.ToolCallInfo, bool) {
-	var part struct {
-		Type string          `json:"type"`
-		Tool json.RawMessage `json:"tool"`
-		State struct {
-			Status string          `json:"status"`
-			Input  json.RawMessage `json:"input"`
-			Output string          `json:"output"`
-		} `json:"state"`
+// channelSessionName produces a human-readable session name for a chat-
+// provider session so the admin UI list is browsable. Keeps the channel
+// identifier verbatim — chat-provider IDs are opaque and we don't have a
+// cheap way to resolve them to display names here.
+func channelSessionName(provider, channelID string) string {
+	providerLabel := strings.ToUpper(provider[:1]) + provider[1:]
+	if channelID == "" {
+		return providerLabel
 	}
-	if err := json.Unmarshal(raw, &part); err != nil || part.Type != "tool" {
-		return chat.ToolCallInfo{}, false
-	}
-
-	// Resolve tool name — can be a string or an object with a name field
-	var name string
-	var toolStr string
-	if json.Unmarshal(part.Tool, &toolStr) == nil && toolStr != "" {
-		name = toolStr
-	} else {
-		var toolObj struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(part.Tool, &toolObj) == nil {
-			name = toolObj.Name
-		}
-	}
-
-	if name == "" {
-		return chat.ToolCallInfo{}, false
-	}
-
-	return chat.ToolCallInfo{
-		Name:   name,
-		Input:  string(part.State.Input),
-		Output: part.State.Output,
-	}, true
+	return fmt.Sprintf("%s: %s", providerLabel, channelID)
 }
 
 // handleChatCommand processes slash/bot commands from any provider.
@@ -758,19 +775,16 @@ func (o *Orchestrator) handleChatCommand(provider, channelID, userID, command, a
 
 	switch command {
 	case "new":
-		session, err := o.engine.CreateSession()
-		if err != nil {
+		sess := session.New()
+		sess.Name = channelSessionName(provider, channelID)
+		if err := o.stack.Sessions.Save(context.Background(), sess); err != nil {
 			return "", fmt.Errorf("failed to create session: %w", err)
 		}
-		o.SetChannelSession(provider, channelID, session.ID)
-		title := session.Title
-		if title == "" {
-			title = "New session"
-		}
-		return fmt.Sprintf("New session started: `%s` - %s", session.ID, title), nil
+		o.SetChannelSession(provider, channelID, sess.ID)
+		return fmt.Sprintf("New session started: `%s`", sess.ID), nil
 
 	case "sessions":
-		sessions, err := o.engine.ListSessions()
+		sessions, err := o.stack.Sessions.List(context.Background())
 		if err != nil {
 			return "", fmt.Errorf("failed to list sessions: %w", err)
 		}
@@ -778,41 +792,38 @@ func (o *Orchestrator) handleChatCommand(provider, channelID, userID, command, a
 			return "No sessions found.", nil
 		}
 		activeID := o.GetChannelSession(provider, channelID)
-		result := "**Sessions:**\n"
+		var b strings.Builder
+		b.WriteString("**Sessions:**\n")
 		for _, s := range sessions {
 			marker := ""
 			if s.ID == activeID {
 				marker = " **(active in this channel)**"
 			}
-			title := s.Title
-			if title == "" {
-				title = "(untitled)"
+			name := s.Name
+			if name == "" {
+				name = "(untitled)"
 			}
-			result += fmt.Sprintf("- `%s` — %s%s\n", s.ID, title, marker)
+			fmt.Fprintf(&b, "- `%s` — %s%s\n", s.ID, name, marker)
 		}
-		return result, nil
+		return b.String(), nil
 
 	case "switch":
 		if args == "" {
 			return "Usage: /switch <session_id>", nil
 		}
-		session, err := o.engine.GetSession(args)
+		sess, err := o.stack.Sessions.Load(context.Background(), args)
 		if err != nil {
 			return fmt.Sprintf("Session not found: %s", args), nil
 		}
-		o.SetChannelSession(provider, channelID, session.ID)
-		title := session.Title
-		if title == "" {
-			title = "(untitled)"
-		}
-		return fmt.Sprintf("Switched to session: `%s` - %s", session.ID, title), nil
+		o.SetChannelSession(provider, channelID, sess.ID)
+		return fmt.Sprintf("Switched to session: `%s`", sess.ID), nil
 
 	case "context":
 		sessionID := o.GetChannelSession(provider, channelID)
 		if sessionID == "" {
 			return "No active session in this channel. Send a message or use /new first.", nil
 		}
-		usage, err := o.engine.GetContextUsage(sessionID)
+		usage, err := o.GetContextUsage(sessionID)
 		if err != nil {
 			return "", fmt.Errorf("failed to get context usage: %w", err)
 		}
@@ -852,41 +863,6 @@ func (o *Orchestrator) SetChannelSession(provider, channelID, sessionID string) 
 	o.channelSessions[sessionKey(provider, channelID)] = sessionID
 	o.sessionMu.Unlock()
 	o.saveChannelSessions()
-}
-
-// Engine returns the engine instance (for admin API wiring).
-func (o *Orchestrator) Engine() engine.Engine {
-	return o.engine
-}
-
-// CreateSession delegates to the engine.
-func (o *Orchestrator) CreateSession() (*engine.Session, error) {
-	return o.engine.CreateSession()
-}
-
-// ListSessions delegates to the engine.
-func (o *Orchestrator) ListSessions() ([]engine.Session, error) {
-	return o.engine.ListSessions()
-}
-
-// GetSession delegates to the engine.
-func (o *Orchestrator) GetSession(id string) (*engine.Session, error) {
-	return o.engine.GetSession(id)
-}
-
-// DeleteSession delegates to the engine.
-func (o *Orchestrator) DeleteSession(id string) error {
-	return o.engine.DeleteSession(id)
-}
-
-// GetMessages delegates to the engine.
-func (o *Orchestrator) GetMessages(sessionID string, limit int) ([]engine.MessageInfo, error) {
-	return o.engine.GetMessages(sessionID, limit)
-}
-
-// Send delegates to the engine.
-func (o *Orchestrator) Send(ctx context.Context, sessionID string, messages []engine.Message) (<-chan engine.Response, error) {
-	return o.engine.Send(ctx, sessionID, messages)
 }
 
 // loadChannelSessions reads per-channel session mappings from disk.
@@ -1028,9 +1004,50 @@ func (o *Orchestrator) channelModesPath() string {
 	return filepath.Join(o.cfg.Workspace.DataDir(), "channel_modes.json")
 }
 
-// GetContextUsage delegates to the engine.
-func (o *Orchestrator) GetContextUsage(sessionID string) (*engine.ContextUsage, error) {
-	return o.engine.GetContextUsage(sessionID)
+// ContextUsage is the data surfaced by the /context chat command.
+type ContextUsage struct {
+	Model        string `json:"model"`
+	MessageCount int    `json:"message_count"`
+	ContextLimit int    `json:"context_limit"`
+	PromptTokens int    `json:"prompt_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+}
+
+// GetContextUsage computes a lightweight usage summary from the session's
+// LastUsage field (populated by the agent loop after each turn) and the
+// persisted default model's context window.
+func (o *Orchestrator) GetContextUsage(sessionID string) (*ContextUsage, error) {
+	sess, err := o.stack.Sessions.Load(context.Background(), sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	u := &ContextUsage{
+		Model:        sess.Model,
+		MessageCount: countAssistantMessages(sess),
+	}
+
+	if sess.LastUsage != nil {
+		u.PromptTokens = sess.LastUsage.PromptTokens
+		u.OutputTokens = sess.LastUsage.CompletionTokens
+	}
+
+	// Best-effort: pull context window from the current default model.
+	if info, ok, err := o.stack.Manager.Default(context.Background()); err == nil && ok {
+		u.ContextLimit = info.ContextWindow
+	}
+
+	return u, nil
+}
+
+func countAssistantMessages(sess *session.Session) int {
+	n := 0
+	for _, m := range sess.Messages {
+		if m.Role == conversation.RoleAssistant {
+			n++
+		}
+	}
+	return n
 }
 
 // formatTokens formats a token count for display (e.g. 128500 -> "128.5k").
@@ -1042,10 +1059,9 @@ func formatTokens(n int) string {
 }
 
 // formatContextUsage builds a human-readable context usage summary.
-func formatContextUsage(sessionID string, usage *engine.ContextUsage) string {
+func formatContextUsage(sessionID string, usage *ContextUsage) string {
 	var b strings.Builder
 
-	// Truncate session ID for display
 	displayID := sessionID
 	if len(displayID) > 8 {
 		displayID = displayID[:8]
@@ -1059,136 +1075,131 @@ func formatContextUsage(sessionID string, usage *engine.ContextUsage) string {
 
 	b.WriteString(fmt.Sprintf("Messages: %d assistant responses\n", usage.MessageCount))
 
-	if usage.MessageCount == 0 {
-		b.WriteString("No assistant messages yet — context usage unavailable.")
-		return b.String()
-	}
-
-	// Current context with optional percentage
 	if usage.ContextLimit > 0 {
-		pct := float64(usage.CurrentContext) / float64(usage.ContextLimit) * 100
+		pct := float64(usage.PromptTokens) / float64(usage.ContextLimit) * 100
 		b.WriteString(fmt.Sprintf("Current context: %s tokens (%.1f%% of %s)\n",
-			formatTokens(usage.CurrentContext), pct, formatTokens(usage.ContextLimit)))
-	} else {
-		b.WriteString(fmt.Sprintf("Current context: %s tokens\n", formatTokens(usage.CurrentContext)))
+			formatTokens(usage.PromptTokens), pct, formatTokens(usage.ContextLimit)))
+	} else if usage.PromptTokens > 0 {
+		b.WriteString(fmt.Sprintf("Current context: %s tokens\n", formatTokens(usage.PromptTokens)))
 	}
 
-	// Output tokens
-	if usage.TotalReasoning > 0 {
-		b.WriteString(fmt.Sprintf("Total output: %s tokens (%s reasoning)\n",
-			formatTokens(usage.TotalOutput), formatTokens(usage.TotalReasoning)))
-	} else {
-		b.WriteString(fmt.Sprintf("Total output: %s tokens\n", formatTokens(usage.TotalOutput)))
-	}
-
-	// Cache stats (only if non-zero)
-	if usage.CacheRead > 0 || usage.CacheWrite > 0 {
-		b.WriteString(fmt.Sprintf("Cache: %s read / %s write\n",
-			formatTokens(usage.CacheRead), formatTokens(usage.CacheWrite)))
-	}
-
-	// Cost
-	if usage.TotalCost > 0 {
-		b.WriteString(fmt.Sprintf("Cost: $%.4f\n", usage.TotalCost))
+	if usage.OutputTokens > 0 {
+		b.WriteString(fmt.Sprintf("Output tokens: %s\n", formatTokens(usage.OutputTokens)))
 	}
 
 	return b.String()
 }
 
-// startMCPHTTPServer starts the MCP HTTP server so it's ready before OpenCode connects.
-// Called from New() to ensure the server is listening before the entrypoint launches OpenCode.
-func (o *Orchestrator) startMCPHTTPServer() error {
-	mcpToken, err := o.loadOrGenerateMCPToken()
+// ListModels implements mcp.ModelLookup by delegating to stackllm's profile.Manager.
+func (o *Orchestrator) ListModels() ([]mcp.ModelInfo, error) {
+	infos, err := o.stack.Manager.ListAllModels(context.Background())
 	if err != nil {
-		return fmt.Errorf("failed to get MCP token: %w", err)
+		return nil, err
 	}
-	o.mcpToken = mcpToken
-
-	mcpMux := http.NewServeMux()
-	mcpMux.Handle("/mcp", mcp.BearerTokenMiddleware(mcpToken, o.mcpServer.HTTPHandler()))
-
-	addr := fmt.Sprintf("127.0.0.1:%d", mcp.MCPPort)
-	o.mcpHTTPServer = &http.Server{
-		Addr:    addr,
-		Handler: mcpMux,
+	out := make([]mcp.ModelInfo, 0, len(infos))
+	for _, m := range infos {
+		out = append(out, mcp.ModelInfo{
+			ProviderID: m.Provider,
+			ModelID:    m.Model,
+			Context:    m.ContextWindow,
+		})
 	}
-
-	// Use a listener to guarantee the port is open before returning
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", addr, err)
-	}
-
-	go func() {
-		if err := o.mcpHTTPServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("MCP HTTP server error: %v", err)
-		}
-	}()
-
-	log.Printf("MCP HTTP server listening on %s", ln.Addr().String())
-	return nil
+	return out, nil
 }
 
-// closeMCPHTTPServer shuts down the MCP HTTP server if running.
-func (o *Orchestrator) closeMCPHTTPServer() {
-	if o.mcpHTTPServer != nil {
-		o.mcpHTTPServer.Close()
-	}
-}
-
-// loadOrGenerateMCPToken reads the MCP token from secure/data/mcp_token.
-// If the file doesn't exist (e.g. in dev mode), it generates a fresh token.
-func (o *Orchestrator) loadOrGenerateMCPToken() (string, error) {
-	tokenPath := filepath.Join(o.cfg.Workspace.DataDir(), "mcp_token")
-	data, err := os.ReadFile(tokenPath)
-	if err == nil && len(data) > 0 {
-		token := strings.TrimSpace(string(data))
-		log.Printf("Loaded MCP token from %s", tokenPath)
-		return token, nil
-	}
-
-	// No persisted token — generate one (dev mode)
-	token, err := mcp.GenerateToken()
-	if err != nil {
-		return "", err
-	}
-	log.Printf("Generated ephemeral MCP token (no token file at %s)", tokenPath)
-	return token, nil
-}
-
-// ListModels returns all available models from the engine.
-func (o *Orchestrator) ListModels() ([]engine.ModelInfo, error) {
-	return o.engine.ListModels()
-}
-
-// GetDefaultModel returns the current default provider and model.
+// GetDefaultModel implements mcp.ModelLookup.
 func (o *Orchestrator) GetDefaultModel() (string, string) {
-	return o.engine.GetDefaultModel()
+	info, ok, err := o.stack.Manager.Default(context.Background())
+	if err != nil || !ok {
+		return "", ""
+	}
+	return info.Provider, info.Model
 }
 
-// SetDefaultModel updates the default model on the engine and persists to disk.
+// SetDefaultModel implements mcp.ModelLookup. It also persists a legacy
+// copy so older code paths that still read the JSON file see the choice.
 func (o *Orchestrator) SetDefaultModel(provider, model string) error {
-	o.engine.SetDefaultModel(provider, model)
+	info := profile.ModelInfo{Provider: provider, Model: model}
+	if err := o.stack.Manager.SetDefaultModel(info); err != nil {
+		return err
+	}
 	if err := o.modelStore.Set(provider, model); err != nil {
-		return fmt.Errorf("failed to persist model preference: %w", err)
+		log.Printf("Warning: legacy model preference save failed: %v", err)
 	}
 	log.Printf("Default model set to %s/%s", provider, model)
 	return nil
 }
 
-// Schedule management methods (implements mcp.SchedulerLookup + admin.SchedulerAPI)
+// --- Scheduler helpers ---
 
-// ScheduleList returns all schedules from the store.
+// RunAgent implements scheduler.EngineAPI — runs an agent prompt to
+// completion and returns the final assistant text.
+func (o *Orchestrator) RunAgent(ctx context.Context, prompt string) (string, string, error) {
+	info, ok, err := o.stack.Manager.Default(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("load default model: %w", err)
+	}
+	if !ok {
+		return "", "", fmt.Errorf("no default model set")
+	}
+	prov, err := o.stack.Manager.LoadProviderForModel(ctx, info)
+	if err != nil {
+		return "", "", fmt.Errorf("load provider: %w", err)
+	}
+
+	sess := session.New()
+	sess.Model = info.String()
+	sess.Name = "Scheduled: " + truncateForName(prompt, 40)
+	if p := o.stack.SystemPrompt(); p != "" {
+		sess.AppendMessage(conversation.Message{
+			Role:   conversation.RoleSystem,
+			Blocks: []conversation.Block{{Type: conversation.BlockText, Text: p}},
+		})
+	}
+	sess.AppendMessage(conversation.Message{
+		Role:   conversation.RoleUser,
+		Blocks: []conversation.Block{{Type: conversation.BlockText, Text: prompt}},
+	})
+
+	a := agent.New(prov, agent.WithModel(info.Model), agent.WithTools(o.stack.Tools))
+	events, err := a.Run(ctx, sess.Messages)
+	if err != nil {
+		return "", "", err
+	}
+
+	var text strings.Builder
+	for ev := range events {
+		switch ev.Type {
+		case agent.EventBlockEnd:
+			if ev.Block != nil && ev.Block.Type == conversation.BlockText {
+				text.Reset()
+				text.WriteString(ev.Block.Text)
+			}
+		case agent.EventComplete:
+			sess.Messages = append([]conversation.Message(nil), ev.Messages...)
+		case agent.EventError:
+			return sess.ID, text.String(), ev.Err
+		}
+	}
+	if err := o.stack.Sessions.Save(context.Background(), sess); err != nil {
+		log.Printf("Warning: failed to save scheduler session %s: %v", sess.ID, err)
+	}
+	return sess.ID, text.String(), nil
+}
+
+// --- Schedule management (implements mcp.SchedulerLookup + admin.SchedulerAPI) ---
+
+// List returns all schedules from the store.
 func (o *Orchestrator) List() ([]*admin.Schedule, error) {
 	return o.scheduler.Store().List()
 }
 
-// ScheduleGet returns a schedule by ID.
+// Get returns a schedule by ID.
 func (o *Orchestrator) Get(id string) (*admin.Schedule, error) {
 	return o.scheduler.Store().Get(id)
 }
 
-// ScheduleCreate creates a new schedule and reloads the scheduler.
+// Create creates a new schedule and reloads the scheduler.
 func (o *Orchestrator) Create(sched *admin.Schedule) (*admin.Schedule, error) {
 	created, err := o.scheduler.Store().Create(sched)
 	if err != nil {
@@ -1198,7 +1209,7 @@ func (o *Orchestrator) Create(sched *admin.Schedule) (*admin.Schedule, error) {
 	return created, nil
 }
 
-// ScheduleUpdate updates a schedule and reloads the scheduler.
+// Update updates a schedule and reloads the scheduler.
 func (o *Orchestrator) Update(id string, updates *admin.Schedule) (*admin.Schedule, error) {
 	updated, err := o.scheduler.Store().Update(id, updates)
 	if err != nil {
@@ -1208,7 +1219,7 @@ func (o *Orchestrator) Update(id string, updates *admin.Schedule) (*admin.Schedu
 	return updated, nil
 }
 
-// ScheduleDelete deletes a schedule and reloads the scheduler.
+// Delete deletes a schedule and reloads the scheduler.
 func (o *Orchestrator) Delete(id string) error {
 	if err := o.scheduler.Store().Delete(id); err != nil {
 		return err
@@ -1217,7 +1228,7 @@ func (o *Orchestrator) Delete(id string) error {
 	return nil
 }
 
-// ScheduleSetEnabled enables or disables a schedule and reloads.
+// SetEnabled enables or disables a schedule and reloads.
 func (o *Orchestrator) SetEnabled(id string, enabled bool) error {
 	if err := o.scheduler.Store().SetEnabled(id, enabled); err != nil {
 		return err
@@ -1241,14 +1252,26 @@ func (o *Orchestrator) Scheduler() *scheduler.Scheduler {
 	return o.scheduler
 }
 
-// ReloadContext reloads context files (SOUL, USER, MEMORY)
+// truncateForName trims a free-form string so it's safe to use as a session
+// Name column. The store has no length limit but overlong names break the
+// sidebar layout, so we cap at n runes and append an ellipsis if cut.
+func truncateForName(s string, n int) string {
+	s = strings.TrimSpace(s)
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
+}
+
+// ReloadContext reloads context files (SOUL, USER, MEMORY) and updates the
+// stack's system prompt.
 func (o *Orchestrator) ReloadContext() error {
 	systemPrompt, err := o.contextLoader.Load()
 	if err != nil {
 		return fmt.Errorf("failed to reload context: %w", err)
 	}
-
-	o.engine.SetSystemPrompt(systemPrompt)
+	o.stack.SetSystemPrompt(systemPrompt)
 	log.Println("Context reloaded successfully")
 	return nil
 }

@@ -17,13 +17,11 @@ type SPAHandler struct {
 
 // NewSPAHandler creates a new SPA handler from the embedded filesystem.
 func NewSPAHandler() (*SPAHandler, error) {
-	// Get the dist subdirectory
 	subFS, err := fs.Sub(adminui.DistFS, "dist")
 	if err != nil {
 		return nil, err
 	}
 
-	// Check if the admin UI has actually been built
 	_, err = fs.Stat(subFS, "index.html")
 	built := err == nil
 
@@ -35,23 +33,19 @@ func NewSPAHandler() (*SPAHandler, error) {
 }
 
 func (h *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// If the admin UI hasn't been built, show a placeholder
 	if !h.built {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(placeholderHTML))
 		return
 	}
 
-	// Try to serve the file directly
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
 		path = "index.html"
 	}
 
-	// Check if the file exists
 	_, err := fs.Stat(h.fileServer, path)
 	if err != nil {
-		// File doesn't exist, serve index.html for SPA routing
 		r.URL.Path = "/"
 	}
 
@@ -101,6 +95,10 @@ npm run build</pre>
 </html>`
 
 // HandlerWithUI returns the HTTP handler with both API and embedded UI.
+//
+// DUAL HANDLER RULE (CLAUDE.md): API routes are registered by calling
+// registerAPIRoutes, the same method Handler() uses. Adding a route to
+// one but not the other is structurally impossible.
 func (s *Server) HandlerWithUI() (http.Handler, error) {
 	spaHandler, err := NewSPAHandler()
 	if err != nil {
@@ -108,42 +106,11 @@ func (s *Server) HandlerWithUI() (http.Handler, error) {
 	}
 
 	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
 
-	// API routes (must come first due to path matching)
-	mux.HandleFunc("/api/version", handleVersion)
-	mux.HandleFunc("/api/setup/status", s.setupHandler.Status)
-	mux.HandleFunc("/api/setup/profile", s.setupHandler.Profile)
-	mux.HandleFunc("/api/setup", s.setupHandler.Setup)
-	mux.HandleFunc("/api/auth/login", s.sessionHandler.Login)
-	mux.HandleFunc("/api/auth/logout", s.sessionHandler.Logout)
-	mux.HandleFunc("/api/session", s.sessionHandler.Session)
-	mux.HandleFunc("/api/auth/me", s.withAuth(s.sessionHandler.Me))
-	mux.HandleFunc("/api/scripts", s.withAuth(s.handleScripts))
-	mux.HandleFunc("/api/scripts/", s.withAuth(s.handleScriptByName))
-
-	// Engine auth endpoints
-	mux.HandleFunc("/api/engine/auth/terminal", s.withAuthWS(s.engineAuthHandlers.Terminal))
-	mux.HandleFunc("/api/engine/auth", s.withAuth(s.engineAuthHandlers.HandleEngineAuth))
-
-	// Secret management endpoints
-	mux.HandleFunc("/api/secrets", s.withAuth(s.handleSecrets))
-	mux.HandleFunc("/api/secrets/", s.withAuth(s.handleSecretByName))
-
-	// AI session management endpoints
-	s.registerSessionRoutes(mux)
-
-	// Model management endpoints
-	s.registerModelRoutes(mux)
-
-	// Provider management endpoints
-	s.registerProviderRoutes(mux)
-
-	// Schedule management endpoints
-	s.registerScheduleRoutes(mux)
-
-	// Static files and SPA fallback
+	// SPA fallback — must come after every /api/* route so the prefix
+	// match on specific API paths wins over the root catch-all.
 	mux.Handle("/", spaHandler)
 
-	// Apply setup middleware
 	return RequireSetupMiddleware(s.users, s.config.DataDir)(mux), nil
 }

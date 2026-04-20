@@ -13,9 +13,12 @@ import {
   NIcon,
   NText,
   NEmpty,
+  NTag,
+  NAlert,
 } from 'naive-ui'
-import { AddOutline, EyeOutline, EyeOffOutline } from '@vicons/ionicons5'
+import { AddOutline, EyeOutline, EyeOffOutline, CheckmarkCircle } from '@vicons/ionicons5'
 import { h } from 'vue'
+import Card from '@/components/shared/Card.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -23,6 +26,8 @@ const api = useApi()
 
 const secrets = ref([])
 const loading = ref(true)
+const providers = ref([])
+const providersLoading = ref(true)
 
 // Add modal
 const showAddModal = ref(false)
@@ -189,7 +194,35 @@ function confirmDelete(name) {
   })
 }
 
-onMounted(loadSecrets)
+async function loadProviders() {
+  providersLoading.value = true
+  try {
+    const response = await api.get('/api/engine/providers')
+    if (response.ok) {
+      const data = await response.json()
+      providers.value = data.providers || []
+    }
+  } catch (e) {
+    // Non-fatal — Secrets view still works without provider info.
+  } finally {
+    providersLoading.value = false
+  }
+}
+
+function providerLabel(name) {
+  switch (name) {
+    case 'openai':  return 'OpenAI'
+    case 'gemini':  return 'Google Gemini'
+    case 'copilot': return 'GitHub Copilot'
+    case 'ollama':  return 'Ollama'
+    default:        return name
+  }
+}
+
+onMounted(() => {
+  loadSecrets()
+  loadProviders()
+})
 </script>
 
 <template>
@@ -204,6 +237,29 @@ onMounted(loadSecrets)
       </n-button>
     </div>
 
+    <!-- LLM providers (read-only, sourced from stackllm auth store) -->
+    <Card title="Authenticated LLM providers" style="margin-bottom: 12px">
+      <n-alert type="info" style="margin: 8px 12px 4px">
+        Provider credentials (OpenAI / Gemini / Copilot / Ollama) are managed on the
+        <a href="/engine">Engine</a> page. They don't appear in the Starlark secret store below.
+      </n-alert>
+      <div v-if="providersLoading" class="p-4">Loading…</div>
+      <div v-else class="p-4">
+        <n-space>
+          <n-tag
+            v-for="p in providers"
+            :key="p.name"
+            :type="p.authenticated ? 'success' : 'default'"
+          >
+            <template v-if="p.authenticated" #icon>
+              <n-icon :component="CheckmarkCircle" />
+            </template>
+            {{ providerLabel(p.name) }} — {{ p.authenticated ? 'authenticated' : 'not signed in' }}
+          </n-tag>
+        </n-space>
+      </div>
+    </Card>
+
     <n-data-table
       v-if="secrets.length > 0 || loading"
       :columns="columns"
@@ -213,7 +269,7 @@ onMounted(loadSecrets)
     />
     <n-empty
       v-else
-      description="No secrets configured. Add secrets to make them available to Starlark scripts via secrets.get(&quot;NAME&quot;)."
+      description="No Starlark secrets configured. Add secrets to make them available to scripts via secrets.get(&quot;NAME&quot;)."
       style="padding: 40px 0"
     />
 

@@ -10,8 +10,9 @@ import {
   CodeSlashOutline,
   LockClosedOutline,
   TimerOutline,
-  KeyOutline,
-  SettingsOutline,
+  HardwareChipOutline,
+  OptionsOutline,
+  LinkOutline,
 } from '@vicons/ionicons5'
 
 const route = useRoute()
@@ -24,8 +25,9 @@ const menuOptions = [
   { label: 'Scripts', key: 'scripts', route: '/scripts', icon: CodeSlashOutline },
   { label: 'Secrets', key: 'secrets', route: '/secrets', icon: LockClosedOutline },
   { label: 'Schedules', key: 'schedules', route: '/schedules', icon: TimerOutline },
-  { label: 'Engine Auth', key: 'engine-auth', route: '/engine-auth', icon: KeyOutline },
-  { label: 'Settings', key: 'settings', route: '/settings', icon: SettingsOutline },
+  { label: 'Engine', key: 'engine', route: '/engine', icon: HardwareChipOutline },
+  { label: 'Integrations', key: 'integrations', route: '/integrations', icon: LinkOutline },
+  { label: 'Advanced', key: 'advanced', route: '/settings/advanced', icon: OptionsOutline },
 ]
 
 function renderIcon(icon) {
@@ -52,8 +54,9 @@ function activateCurrentRoute() {
   else if (path.startsWith('/scripts')) selectedMenuKey.value = 'scripts'
   else if (path === '/secrets') selectedMenuKey.value = 'secrets'
   else if (path === '/schedules') selectedMenuKey.value = 'schedules'
-  else if (path === '/engine-auth') selectedMenuKey.value = 'engine-auth'
-  else if (path === '/settings') selectedMenuKey.value = 'settings'
+  else if (path === '/engine') selectedMenuKey.value = 'engine'
+  else if (path === '/integrations') selectedMenuKey.value = 'integrations'
+  else if (path.startsWith('/settings/advanced')) selectedMenuKey.value = 'advanced'
   else selectedMenuKey.value = 'dashboard'
 }
 

@@ -1,64 +1,71 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/open-pact/openpact/internal/chat"
 	"github.com/open-pact/openpact/internal/config"
-	"github.com/open-pact/openpact/internal/engine"
+	"github.com/stack-bound/stackllm/conversation"
+	"github.com/stack-bound/stackllm/session"
 )
 
-func TestNewOrchestrator(t *testing.T) {
+func newTestOrchestrator(t *testing.T) (*Orchestrator, *config.Config) {
+	t.Helper()
+
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		Engine: config.EngineConfig{
-			Type: "opencode",
-		},
-		Workspace: config.WorkspaceConfig{
-			Path: tmpDir,
-		},
-		Discord: config.DiscordConfig{
-			Enabled: false, // Don't try to connect
-		},
+		Workspace: config.WorkspaceConfig{Path: tmpDir},
+		Discord:   config.DiscordConfig{Enabled: false},
 	}
-	cfg.Workspace.EnsureDirs()
+	if err := cfg.Workspace.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
 
 	o, err := New(cfg, nil)
 	if err != nil {
-		t.Fatalf("failed to create orchestrator: %v", err)
+		t.Fatalf("New orchestrator: %v", err)
 	}
-	defer o.closeMCPHTTPServer()
+	t.Cleanup(func() {
+		if o.stack != nil {
+			o.stack.Close()
+		}
+	})
+	return o, cfg
+}
+
+func TestNewOrchestrator(t *testing.T) {
+	o, cfg := newTestOrchestrator(t)
 
 	if o.cfg != cfg {
 		t.Error("config not set correctly")
 	}
-
 	if o.contextLoader == nil {
 		t.Error("context loader not initialized")
 	}
-
 	if o.mcpServer == nil {
 		t.Error("MCP server not initialized")
 	}
-
-	if o.engine == nil {
-		t.Error("engine not initialized")
+	if o.stack == nil {
+		t.Fatal("stack not initialized")
+	}
+	if o.stack.Handler == nil {
+		t.Error("stack handler not initialized")
+	}
+	if o.stack.Sessions == nil {
+		t.Error("session store not initialized")
 	}
 }
 
 func TestNewOrchestratorWithDiscordNoToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		Engine: config.EngineConfig{
-			Type: "opencode",
-		},
-		Workspace: config.WorkspaceConfig{
-			Path: tmpDir,
-		},
+		Workspace: config.WorkspaceConfig{Path: tmpDir},
 		Discord: config.DiscordConfig{
 			Enabled:      true,
 			AllowedUsers: []string{"123"},
@@ -67,102 +74,44 @@ func TestNewOrchestratorWithDiscordNoToken(t *testing.T) {
 	}
 	cfg.Workspace.EnsureDirs()
 
-	// With no DISCORD_TOKEN env var, discord creation should be skipped
 	o, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
-	defer o.closeMCPHTTPServer()
+	t.Cleanup(func() { o.stack.Close() })
 
-	// No providers should be running since tokens were not set in env
+	// No providers should be running since tokens were not set in env.
 	if len(o.providers) != 0 {
 		t.Errorf("expected 0 running providers without tokens, got %d", len(o.providers))
 	}
 }
 
 func TestOrchestratorDoubleStart(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Engine: config.EngineConfig{
-			Type: "opencode",
-		},
-		Workspace: config.WorkspaceConfig{
-			Path: tmpDir,
-		},
-		Discord: config.DiscordConfig{
-			Enabled: false,
-		},
-	}
-	cfg.Workspace.EnsureDirs()
+	o, _ := newTestOrchestrator(t)
 
-	o, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("failed to create orchestrator: %v", err)
-	}
-	defer o.closeMCPHTTPServer()
-
-	// Manually set running state
 	o.mu.Lock()
 	o.running = true
 	o.mu.Unlock()
 
-	// Try to start - should fail
-	err = o.Start(nil)
-	if err == nil {
+	// Start should fail when already running; pass a cancelled context so
+	// it doesn't block.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := o.Start(ctx); err == nil {
 		t.Error("expected error when starting already-running orchestrator")
 	}
 }
 
 func TestOrchestratorStop(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Engine: config.EngineConfig{
-			Type: "opencode",
-		},
-		Workspace: config.WorkspaceConfig{
-			Path: tmpDir,
-		},
-		Discord: config.DiscordConfig{
-			Enabled: false,
-		},
-	}
-	cfg.Workspace.EnsureDirs()
-
-	o, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("failed to create orchestrator: %v", err)
-	}
-	defer o.closeMCPHTTPServer()
-
-	// Stop should be safe to call even before start
+	o, _ := newTestOrchestrator(t)
+	// Safe to Stop even before Start.
 	o.Stop()
 }
 
 func TestOrchestratorReloadContext(t *testing.T) {
-	tmpDir := t.TempDir()
+	o, _ := newTestOrchestrator(t)
 
-	cfg := &config.Config{
-		Engine: config.EngineConfig{
-			Type: "opencode",
-		},
-		Workspace: config.WorkspaceConfig{
-			Path: tmpDir,
-		},
-		Discord: config.DiscordConfig{
-			Enabled: false,
-		},
-	}
-	cfg.Workspace.EnsureDirs()
-
-	o, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("failed to create orchestrator: %v", err)
-	}
-	defer o.closeMCPHTTPServer()
-
-	// Reload should work even with empty workspace
-	err = o.ReloadContext()
-	if err != nil {
+	if err := o.ReloadContext(); err != nil {
 		t.Errorf("ReloadContext failed: %v", err)
 	}
 }
@@ -191,34 +140,25 @@ func TestFormatTokens(t *testing.T) {
 }
 
 func TestFormatContextUsage(t *testing.T) {
-	usage := &engine.ContextUsage{
-		Model:          "claude-sonnet-4-20250514",
-		MessageCount:   12,
-		CurrentContext: 38100,
-		TotalOutput:    7100,
-		TotalReasoning: 2300,
-		CacheRead:      25000,
-		CacheWrite:     8500,
-		TotalCost:      0.0832,
-		ContextLimit:   200000,
+	usage := &ContextUsage{
+		Model:        "openai/gpt-4o",
+		MessageCount: 12,
+		PromptTokens: 38100,
+		OutputTokens: 7100,
+		ContextLimit: 200000,
 	}
 
 	result := formatContextUsage("abc12345xyz", usage)
 
-	// Check key parts are present
 	checks := []string{
 		"**Context Usage**",
 		"abc12345",
-		"claude-sonnet-4-20250514",
+		"openai/gpt-4o",
 		"12 assistant responses",
 		"38.1k tokens",
 		"19.1%",
 		"200.0k",
-		"7.1k tokens",
-		"2.3k reasoning",
-		"25.0k read",
-		"8.5k write",
-		"$0.0832",
+		"7.1k",
 	}
 	for _, check := range checks {
 		if !strings.Contains(result, check) {
@@ -228,29 +168,25 @@ func TestFormatContextUsage(t *testing.T) {
 }
 
 func TestFormatContextUsageNoMessages(t *testing.T) {
-	usage := &engine.ContextUsage{}
+	usage := &ContextUsage{}
 	result := formatContextUsage("session123", usage)
 
 	if !strings.Contains(result, "0 assistant responses") {
 		t.Errorf("expected '0 assistant responses' in output: %s", result)
 	}
-	if !strings.Contains(result, "unavailable") {
-		t.Errorf("expected 'unavailable' in output: %s", result)
-	}
 }
 
 func TestFormatContextUsageNoLimit(t *testing.T) {
-	usage := &engine.ContextUsage{
-		Model:          "gpt-4",
-		MessageCount:   3,
-		CurrentContext: 5000,
-		TotalOutput:    1000,
-		ContextLimit:   0, // unknown
+	usage := &ContextUsage{
+		Model:        "ollama/llama3",
+		MessageCount: 3,
+		PromptTokens: 5000,
+		OutputTokens: 1000,
+		ContextLimit: 0,
 	}
 
 	result := formatContextUsage("sess1", usage)
 
-	// Should NOT contain percentage when limit is 0
 	if strings.Contains(result, "%") {
 		t.Errorf("should not contain percentage when limit is 0: %s", result)
 	}
@@ -260,33 +196,19 @@ func TestFormatContextUsageNoLimit(t *testing.T) {
 }
 
 func TestChannelModeGetSetDefault(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Engine:    config.EngineConfig{Type: "opencode"},
-		Workspace: config.WorkspaceConfig{Path: tmpDir},
-	}
-	cfg.Workspace.EnsureDirs()
+	o, _ := newTestOrchestrator(t)
 
-	o, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("failed to create orchestrator: %v", err)
-	}
-	defer o.closeMCPHTTPServer()
-
-	// Default should be "simple"
 	mode := o.GetChannelMode("discord", "chan123")
 	if mode != chat.ModeSimple {
 		t.Errorf("expected default mode %q, got %q", chat.ModeSimple, mode)
 	}
 
-	// Set mode
 	o.SetChannelMode("discord", "chan123", chat.ModeFull)
 	mode = o.GetChannelMode("discord", "chan123")
 	if mode != chat.ModeFull {
 		t.Errorf("expected mode %q, got %q", chat.ModeFull, mode)
 	}
 
-	// Different channel should still be default
 	mode = o.GetChannelMode("discord", "chan456")
 	if mode != chat.ModeSimple {
 		t.Errorf("expected default mode for different channel, got %q", mode)
@@ -296,7 +218,6 @@ func TestChannelModeGetSetDefault(t *testing.T) {
 func TestChannelModePersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		Engine:    config.EngineConfig{Type: "opencode"},
 		Workspace: config.WorkspaceConfig{Path: tmpDir},
 	}
 	cfg.Workspace.EnsureDirs()
@@ -305,13 +226,10 @@ func TestChannelModePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create orchestrator: %v", err)
 	}
-	defer o.closeMCPHTTPServer()
 
-	// Set modes
 	o.SetChannelMode("discord", "chan1", chat.ModeThinking)
 	o.SetChannelMode("telegram", "chan2", chat.ModeTools)
 
-	// Verify file was written
 	path := filepath.Join(cfg.Workspace.DataDir(), "channel_modes.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -330,15 +248,14 @@ func TestChannelModePersistence(t *testing.T) {
 		t.Errorf("expected mode %q in file, got %q", chat.ModeTools, f.Modes["telegram:chan2"])
 	}
 
-	// Close first orchestrator's MCP server before creating second
-	o.closeMCPHTTPServer()
+	// Close the first orchestrator's stack before reopening the workspace.
+	o.stack.Close()
 
-	// Create new orchestrator and load
 	o2, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("failed to create second orchestrator: %v", err)
 	}
-	defer o2.closeMCPHTTPServer()
+	t.Cleanup(func() { o2.stack.Close() })
 
 	o2.loadChannelModes()
 
@@ -351,18 +268,7 @@ func TestChannelModePersistence(t *testing.T) {
 }
 
 func TestHandleModeCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Engine:    config.EngineConfig{Type: "opencode"},
-		Workspace: config.WorkspaceConfig{Path: tmpDir},
-	}
-	cfg.Workspace.EnsureDirs()
-
-	o, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("failed to create orchestrator: %v", err)
-	}
-	defer o.closeMCPHTTPServer()
+	o, _ := newTestOrchestrator(t)
 
 	tests := []struct {
 		command  string
@@ -393,18 +299,7 @@ func TestHandleModeCommands(t *testing.T) {
 }
 
 func TestListChannelModes(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Engine:    config.EngineConfig{Type: "opencode"},
-		Workspace: config.WorkspaceConfig{Path: tmpDir},
-	}
-	cfg.Workspace.EnsureDirs()
-
-	o, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("failed to create orchestrator: %v", err)
-	}
-	defer o.closeMCPHTTPServer()
+	o, _ := newTestOrchestrator(t)
 
 	o.SetChannelMode("discord", "c1", chat.ModeFull)
 	o.SetChannelMode("slack", "c2", chat.ModeThinking)
@@ -421,93 +316,186 @@ func TestListChannelModes(t *testing.T) {
 	}
 }
 
-func TestExtractToolCall(t *testing.T) {
-	// Real OpenCode structure: tool is a string, input/output are in state
-	raw := json.RawMessage(`{
-		"type": "tool",
-		"id": "prt_abc123",
-		"callID": "call_xyz",
-		"tool": "openpact_workspace_list",
-		"state": {
-			"status": "completed",
-			"input": {"path": "memory"},
-			"output": "2026-02-22.md\n2026-02-23.md"
+// TestSessionLockSerializesPerSession confirms the per-session mutex is
+// the same instance for the same session ID (so concurrent messages to a
+// channel queue up behind one agent run).
+func TestSessionLockSerializesPerSession(t *testing.T) {
+	o, _ := newTestOrchestrator(t)
+
+	m1 := o.sessionLock("sess-a")
+	m2 := o.sessionLock("sess-a")
+	m3 := o.sessionLock("sess-b")
+
+	if m1 != m2 {
+		t.Error("sessionLock returned different mutexes for the same session ID")
+	}
+	if m1 == m3 {
+		t.Error("sessionLock returned the same mutex for different session IDs")
+	}
+}
+
+// TestEnsureChannelSessionPersists creates a new session via the public
+// helper and confirms it lands in the SQLite store.
+func TestEnsureChannelSessionPersists(t *testing.T) {
+	o, _ := newTestOrchestrator(t)
+
+	sid, err := o.ensureChannelSession("discord", "c1")
+	if err != nil {
+		t.Fatalf("ensureChannelSession: %v", err)
+	}
+	if sid == "" {
+		t.Fatal("session ID is empty")
+	}
+
+	// Reusing the same channel returns the same ID.
+	sid2, err := o.ensureChannelSession("discord", "c1")
+	if err != nil {
+		t.Fatalf("ensureChannelSession second call: %v", err)
+	}
+	if sid != sid2 {
+		t.Errorf("second call returned a different session: %s != %s", sid, sid2)
+	}
+
+	// And the session is loadable from SQLite.
+	sess, err := o.stack.Sessions.Load(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sess.ID != sid {
+		t.Errorf("loaded session ID = %s, want %s", sess.ID, sid)
+	}
+
+	// New sessions must carry a human-readable name so the admin UI list
+	// doesn't show a grid of indistinguishable UUIDs.
+	if sess.Name != "Discord: c1" {
+		t.Errorf("Session.Name = %q, want %q", sess.Name, "Discord: c1")
+	}
+}
+
+func TestChannelSessionName(t *testing.T) {
+	cases := []struct {
+		provider  string
+		channelID string
+		want      string
+	}{
+		{"discord", "general", "Discord: general"},
+		{"slack", "C123ABC", "Slack: C123ABC"},
+		{"telegram", "42", "Telegram: 42"},
+		{"discord", "", "Discord"},
+	}
+	for _, tc := range cases {
+		got := channelSessionName(tc.provider, tc.channelID)
+		if got != tc.want {
+			t.Errorf("channelSessionName(%q, %q) = %q, want %q",
+				tc.provider, tc.channelID, got, tc.want)
 		}
-	}`)
-
-	tc, ok := extractToolCall(raw)
-	if !ok {
-		t.Fatal("expected tool call to be extracted")
-	}
-	if tc.Name != "openpact_workspace_list" {
-		t.Errorf("name = %q, want %q", tc.Name, "openpact_workspace_list")
-	}
-	if !strings.Contains(tc.Input, `"path"`) || !strings.Contains(tc.Input, `"memory"`) {
-		t.Errorf("input = %q, expected to contain path and memory", tc.Input)
-	}
-	if tc.Output != "2026-02-22.md\n2026-02-23.md" {
-		t.Errorf("output = %q, want %q", tc.Output, "2026-02-22.md\n2026-02-23.md")
 	}
 }
 
-func TestExtractToolCallObjectTool(t *testing.T) {
-	// Fallback: tool as an object with name field (in case some providers use this)
-	raw := json.RawMessage(`{
-		"type": "tool",
-		"tool": {"name": "workspace_read"},
-		"state": {"status": "completed", "input": {"path": "/foo"}, "output": "file contents"}
-	}`)
+// TestSessionSaveLoadRoundTrip drives a message through the SQLite store
+// directly to verify orchestrator's session plumbing is intact. This does
+// not call the live agent — we can't from unit tests — but it does run
+// through AppendMessage, Save, Load.
+func TestSessionSaveLoadRoundTrip(t *testing.T) {
+	o, _ := newTestOrchestrator(t)
+	ctx := context.Background()
 
-	tc, ok := extractToolCall(raw)
-	if !ok {
-		t.Fatal("expected object-format tool call to be extracted")
+	sess := session.New()
+	sess.AppendMessage(conversation.Message{
+		Role:   conversation.RoleUser,
+		Blocks: []conversation.Block{{Type: conversation.BlockText, Text: "hi"}},
+	})
+	if err := o.stack.Sessions.Save(ctx, sess); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
-	if tc.Name != "workspace_read" {
-		t.Errorf("name = %q, want %q", tc.Name, "workspace_read")
+
+	loaded, err := o.stack.Sessions.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	if tc.Output != "file contents" {
-		t.Errorf("output = %q, want %q", tc.Output, "file contents")
+	if len(loaded.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(loaded.Messages))
 	}
-}
-
-func TestExtractToolCallNonTool(t *testing.T) {
-	raw := json.RawMessage(`{"type": "text", "content": "hello"}`)
-
-	_, ok := extractToolCall(raw)
-	if ok {
-		t.Error("expected non-tool part to not be extracted")
-	}
-}
-
-func TestExtractToolCallNoName(t *testing.T) {
-	// Part with type "tool" but no tool field at all — should be skipped
-	raw := json.RawMessage(`{"type": "tool", "id": "t1", "text": "some_tool"}`)
-
-	_, ok := extractToolCall(raw)
-	if ok {
-		t.Error("expected tool part without tool name to not be extracted")
+	if loaded.Messages[0].TextContent() != "hi" {
+		t.Errorf("text content = %q, want hi", loaded.Messages[0].TextContent())
 	}
 }
 
-func TestExtractToolCallRunningState(t *testing.T) {
-	// Running tool calls (no output yet) should still be extracted
-	raw := json.RawMessage(`{
-		"type": "tool",
-		"tool": "openpact_workspace_read",
-		"state": {
-			"status": "running",
-			"input": {"path": "SOUL.md"}
-		}
-	}`)
+// TestConcurrentSameSessionSerializes confirms the per-session mutex
+// prevents concurrent goroutines from interleaving into the critical
+// section. We can't run the actual agent, but we can exercise the lock
+// and make sure only one goroutine holds it at a time.
+func TestConcurrentSameSessionSerializes(t *testing.T) {
+	o, _ := newTestOrchestrator(t)
 
-	tc, ok := extractToolCall(raw)
-	if !ok {
-		t.Fatal("expected running tool call to be extracted")
+	var active int32 = 0
+	var maxActive int32 = 0
+	var wg sync.WaitGroup
+	var stateMu sync.Mutex
+
+	lock := o.sessionLock("s1")
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lock.Lock()
+			defer lock.Unlock()
+
+			stateMu.Lock()
+			active++
+			if active > maxActive {
+				maxActive = active
+			}
+			stateMu.Unlock()
+
+			// Yield so another goroutine would race if the lock were not held.
+			for i := 0; i < 100; i++ {
+			}
+
+			stateMu.Lock()
+			active--
+			stateMu.Unlock()
+		}()
 	}
-	if tc.Name != "openpact_workspace_read" {
-		t.Errorf("name = %q, want %q", tc.Name, "openpact_workspace_read")
+	wg.Wait()
+	if maxActive > 1 {
+		t.Errorf("expected at most 1 goroutine in critical section, saw %d", maxActive)
 	}
-	if tc.Output != "" {
-		t.Errorf("output = %q, want empty for running tool", tc.Output)
+}
+
+func TestHandleCommandNew_CreatesSession(t *testing.T) {
+	o, _ := newTestOrchestrator(t)
+
+	resp, err := o.handleChatCommand("discord", "chan-new", "u1", "new", "")
+	if err != nil {
+		t.Fatalf("handleChatCommand: %v", err)
+	}
+	if !strings.Contains(resp, "New session started") {
+		t.Errorf("response did not confirm creation: %s", resp)
+	}
+
+	sid := o.GetChannelSession("discord", "chan-new")
+	if sid == "" {
+		t.Fatal("new command did not map a session for the channel")
+	}
+
+	sess, err := o.stack.Sessions.Load(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("load session created by /new: %v", err)
+	}
+	if sess.Name != "Discord: chan-new" {
+		t.Errorf("Session.Name = %q, want %q", sess.Name, "Discord: chan-new")
+	}
+}
+
+func TestHandleCommandUnknown(t *testing.T) {
+	o, _ := newTestOrchestrator(t)
+	resp, err := o.handleChatCommand("discord", "chan", "u", "does-not-exist", "")
+	if err != nil {
+		t.Fatalf("handleChatCommand: %v", err)
+	}
+	if !strings.Contains(resp, "Unknown command") {
+		t.Errorf("expected unknown-command response, got %q", resp)
 	}
 }

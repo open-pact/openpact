@@ -56,8 +56,8 @@ func TestSetupHandler_Status(t *testing.T) {
 	})
 
 	t.Run("setup complete when user and profile exist", func(t *testing.T) {
-		// Write setup state
-		state := SetupState{ProfileComplete: true}
+		// Write setup state — both profile and provider steps complete.
+		state := SetupState{ProfileComplete: true, ProviderComplete: true}
 		data, _ := json.Marshal(state)
 		os.WriteFile(filepath.Join(tmpDir, "setup_state.json"), data, 0644)
 
@@ -463,8 +463,8 @@ func TestRequireSetupMiddleware(t *testing.T) {
 		users, _ := NewUserStore(tmpDir)
 		users.Create("admin", "password1234567890")
 
-		// Write setup state
-		state := SetupState{ProfileComplete: true}
+		// Write setup state — both profile and provider steps complete.
+		state := SetupState{ProfileComplete: true, ProviderComplete: true}
 		data, _ := json.Marshal(state)
 		os.WriteFile(filepath.Join(tmpDir, "setup_state.json"), data, 0644)
 

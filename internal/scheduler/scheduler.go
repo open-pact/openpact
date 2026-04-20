@@ -13,7 +13,6 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/open-pact/openpact/internal/admin"
-	"github.com/open-pact/openpact/internal/engine"
 	"github.com/open-pact/openpact/internal/starlark"
 )
 
@@ -22,10 +21,16 @@ type ChatAPI interface {
 	SendViaProvider(provider, target, content string) error
 }
 
-// EngineAPI creates sessions and sends messages.
+// EngineAPI runs an agent prompt end-to-end.
+//
+// The orchestrator's RunAgent implementation creates a fresh stackllm
+// session, prepends the SOUL/USER/MEMORY system prompt, and returns the
+// final assistant text once the agent loop completes. sessionID is the
+// new session's UUID; output is the final text (empty on a pure tool-use
+// turn with no follow-up text, which the scheduler surfaces as "success
+// with empty output").
 type EngineAPI interface {
-	CreateSession() (*engine.Session, error)
-	Send(ctx context.Context, sessionID string, messages []engine.Message) (<-chan engine.Response, error)
+	RunAgent(ctx context.Context, prompt string) (sessionID string, output string, err error)
 }
 
 // Scheduler manages cron-based job scheduling.
@@ -288,7 +293,9 @@ func (s *Scheduler) executeScript(sched *admin.Schedule) (string, error) {
 	return fmt.Sprintf("%v", result.Value), nil
 }
 
-// executeAgent creates a new AI session and sends the prompt.
+// executeAgent runs the scheduled prompt against the current default model.
+// The orchestrator builds the session, prepends the system prompt, drives
+// the agent loop, and returns the final assistant text.
 func (s *Scheduler) executeAgent(sched *admin.Schedule) (string, error) {
 	s.mu.Lock()
 	eng := s.engineAPI
@@ -298,37 +305,14 @@ func (s *Scheduler) executeAgent(sched *admin.Schedule) (string, error) {
 		return "", fmt.Errorf("engine API not available")
 	}
 
-	session, err := eng.CreateSession()
-	if err != nil {
-		return "", fmt.Errorf("failed to create session: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	messages := []engine.Message{
-		{Role: "user", Content: sched.Prompt},
-	}
-
-	responses, err := eng.Send(ctx, session.ID, messages)
+	_, output, err := eng.RunAgent(ctx, sched.Prompt)
 	if err != nil {
-		return "", fmt.Errorf("failed to send message: %w", err)
+		return "", fmt.Errorf("agent run: %w", err)
 	}
-
-	// Drain response channel and collect text
-	var textParts []string
-	for resp := range responses {
-		if resp.Content != "" {
-			textParts = append(textParts, resp.Content)
-		}
-	}
-
-	// The last text part should contain the full response (SSE streaming sends full text)
-	if len(textParts) > 0 {
-		return textParts[len(textParts)-1], nil
-	}
-
-	return "", nil
+	return output, nil
 }
 
 // sendOutput delivers job output to the configured chat channel.

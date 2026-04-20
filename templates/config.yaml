@@ -1,10 +1,14 @@
-# OpenPact Configuration
+# OpenPact configuration
+#
+# Most settings now live behind the admin UI at /settings/advanced and
+# /integrations, and LLM provider credentials + default model are managed
+# at /engine (they are persisted inside the stackllm data directory, not
+# here). This file covers only the bootstrap essentials.
 
+# engine.db_path is an optional override for the stackllm SQLite session
+# database. Default: <workspace>/secure/data/stackllm.db.
 engine:
-  type: opencode
-  provider: anthropic  # anthropic, openai, google, ollama, etc.
-  model: claude-sonnet-4-20250514
-  port: 4098  # Must match the entrypoint's OpenCode launch port
+  db_path: ""
 
 workspace:
   path: /workspace
@@ -17,3 +21,7 @@ discord:
 starlark:
   max_execution_ms: 30000  # 30 seconds
   max_memory_mb: 128
+
+admin:
+  enabled: true
+  bind: "localhost:8888"

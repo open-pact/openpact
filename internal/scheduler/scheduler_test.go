@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/open-pact/openpact/internal/admin"
-	"github.com/open-pact/openpact/internal/engine"
 )
 
 func setupTestScheduler(t *testing.T) (*Scheduler, string) {
@@ -170,33 +169,22 @@ func TestScheduler_ExecuteScriptError(t *testing.T) {
 
 // mockEngine implements EngineAPI for testing.
 type mockEngine struct {
-	createSessionFn func() (*engine.Session, error)
-	sendFn          func(ctx context.Context, sessionID string, messages []engine.Message) (<-chan engine.Response, error)
+	sessionID string
+	output    string
+	err       error
+	lastInput string
 }
 
-func (m *mockEngine) CreateSession() (*engine.Session, error) {
-	return m.createSessionFn()
-}
-
-func (m *mockEngine) Send(ctx context.Context, sessionID string, messages []engine.Message) (<-chan engine.Response, error) {
-	return m.sendFn(ctx, sessionID, messages)
+func (m *mockEngine) RunAgent(ctx context.Context, prompt string) (string, string, error) {
+	m.lastInput = prompt
+	return m.sessionID, m.output, m.err
 }
 
 func TestScheduler_ExecuteAgent(t *testing.T) {
 	s, dir := setupTestScheduler(t)
 	defer os.RemoveAll(dir)
 
-	mock := &mockEngine{
-		createSessionFn: func() (*engine.Session, error) {
-			return &engine.Session{ID: "test-session"}, nil
-		},
-		sendFn: func(ctx context.Context, sessionID string, messages []engine.Message) (<-chan engine.Response, error) {
-			ch := make(chan engine.Response, 1)
-			ch <- engine.Response{Content: "agent response"}
-			close(ch)
-			return ch, nil
-		},
-	}
+	mock := &mockEngine{sessionID: "test-session", output: "agent response"}
 	s.SetEngineAPI(mock)
 
 	sched, _ := s.store.Create(&admin.Schedule{
@@ -215,6 +203,9 @@ func TestScheduler_ExecuteAgent(t *testing.T) {
 	}
 	if got.LastRunOutput != "agent response" {
 		t.Errorf("expected output 'agent response', got %q", got.LastRunOutput)
+	}
+	if mock.lastInput != "Hello agent" {
+		t.Errorf("expected prompt 'Hello agent' reached the engine, got %q", mock.lastInput)
 	}
 }
 

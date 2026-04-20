@@ -38,7 +38,8 @@ type ProfileRequest struct {
 
 // SetupState tracks multi-step setup progress.
 type SetupState struct {
-	ProfileComplete bool `json:"profile_complete"`
+	ProfileComplete  bool `json:"profile_complete"`
+	ProviderComplete bool `json:"provider_complete"`
 }
 
 // SetupHandler handles first-run setup.
@@ -93,7 +94,63 @@ func (h *SetupHandler) currentSetupStep() string {
 	if err != nil || !state.ProfileComplete {
 		return "profile"
 	}
+	if !state.ProviderComplete {
+		return "provider"
+	}
 	return "complete"
+}
+
+// Provider marks the LLM-provider step of setup complete. Called after
+// the user has authenticated at least one provider and chosen a default
+// model via the /api/engine/ endpoints.
+func (h *SetupHandler) Provider(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "method_not_allowed",
+			"message": "POST required",
+		})
+		return
+	}
+
+	if !h.users.HasUsers() {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "account_required",
+			"message": "Create an account first",
+		})
+		return
+	}
+
+	state, err := h.loadSetupState()
+	if err != nil {
+		state = &SetupState{}
+	}
+	if !state.ProfileComplete {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "profile_required",
+			"message": "Complete the profile step first",
+		})
+		return
+	}
+
+	state.ProviderComplete = true
+	if err := h.saveSetupState(state); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":   "state_failed",
+			"message": "Failed to save setup state",
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(SetupResponse{
+		Success: true,
+		Message: "Setup complete. Please log in.",
+	})
 }
 
 // Status returns whether setup is required.
@@ -304,9 +361,13 @@ func (h *SetupHandler) Profile(w http.ResponseWriter, r *http.Request) {
 func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Always allow setup endpoints and static assets (so the SPA can load)
+			// Always allow setup endpoints, static assets, and the
+			// stackllm engine API (the provider-login step of setup
+			// hits it before the user has any auth token).
 			if r.URL.Path == "/api/setup" || r.URL.Path == "/api/setup/status" ||
-				r.URL.Path == "/api/setup/profile" || r.URL.Path == "/api/version" ||
+				r.URL.Path == "/api/setup/profile" || r.URL.Path == "/api/setup/provider" ||
+				r.URL.Path == "/api/version" ||
+				strings.HasPrefix(r.URL.Path, "/api/engine/") ||
 				r.URL.Path == "/setup" || r.URL.Path == "/" ||
 				strings.HasPrefix(r.URL.Path, "/assets/") {
 				next.ServeHTTP(w, r)
@@ -327,17 +388,13 @@ func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler)
 				return
 			}
 
-			// If profile not complete, block all other endpoints (profile step)
 			statePath := filepath.Join(dataDir, "setup_state.json")
-			profileComplete := false
+			var state SetupState
 			if data, err := os.ReadFile(statePath); err == nil {
-				var state SetupState
-				if err := json.Unmarshal(data, &state); err == nil {
-					profileComplete = state.ProfileComplete
-				}
+				_ = json.Unmarshal(data, &state)
 			}
 
-			if !profileComplete {
+			if !state.ProfileComplete {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				json.NewEncoder(w).Encode(map[string]interface{}{
@@ -345,6 +402,19 @@ func RequireSetupMiddleware(users *UserStore, dataDir string) func(http.Handler)
 					"message":        "Profile setup required",
 					"setup_required": true,
 					"setup_step":     "profile",
+					"redirect":       "/setup",
+				})
+				return
+			}
+
+			if !state.ProviderComplete {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error":          "setup_required",
+					"message":        "LLM provider setup required",
+					"setup_required": true,
+					"setup_step":     "provider",
 					"redirect":       "/setup",
 				})
 				return

@@ -30,7 +30,10 @@ func setupTestServer(t *testing.T) *Server {
 	return server
 }
 
-// completeSetup runs both account creation and profile setup via the API.
+// completeSetup runs account creation, profile setup, and marks the
+// provider step complete so later assertions see a fully-configured
+// install. The provider step is a no-op server-side when there's no
+// stackllm stack wired; tests rely on the state file being written.
 func completeSetup(t *testing.T, handler http.Handler) {
 	t.Helper()
 
@@ -50,6 +53,14 @@ func completeSetup(t *testing.T, handler http.Handler) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Profile setup failed: %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Step 3: Mark LLM provider step complete
+	req = httptest.NewRequest("POST", "/api/setup/provider", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Provider setup failed: %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

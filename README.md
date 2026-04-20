@@ -2,17 +2,17 @@
 
 ![OpenPact Logo](logo.png)
 
-A secure, minimal framework for running your own AI assistant. Built in Go, engine-agnostic, with sandboxed capabilities.
+A secure, minimal framework for running your own AI assistant. Ships as a single static Go binary with an embedded Vue admin UI.
 
 **Website:** [openpact.ai](https://openpact.ai)
 
 ## Features
 
-- **Security-first**: Principle of least privilege - AI can only use explicitly defined MCP tools
-- **Engine-agnostic**: Works with OpenCode (75+ providers)
-- **Sandboxed scripting**: Starlark-based custom skills with secure secret handling
-- **Docker-native**: Two-user security model, easy deployment
-- **Production-ready**: Structured logging, Prometheus metrics, health checks, rate limiting
+- **Single binary** — LLM engine ([stackllm](https://github.com/stack-bound/stackllm)), admin UI, and tool registry are all in-process. No Node, no opencode, no supervisor, no CGO.
+- **Multi-provider** — sign in through the admin UI: OpenAI (API key or "Sign in with ChatGPT"), GitHub Copilot (device flow), Google Gemini (API key), Ollama (local).
+- **Web-driven config** — everything except the bootstrap essentials is managed through the admin UI; `config.yaml` only has `workspace.path`, `admin.bind`, and `starlark` limits.
+- **Security-first** — agents can only call explicitly registered tools; workspace tools are scoped to `ai-data/`; Starlark secrets are redacted before the model ever sees them.
+- **Production-ready** — structured logging, Prometheus metrics, health checks, rate limiting, JWT-protected admin API.
 
 ## Quick Start
 

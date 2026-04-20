@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/open-pact/openpact/internal/engine"
 )
 
 // mockModelLookup implements ModelLookup for testing.
 type mockModelLookup struct {
-	models          []engine.ModelInfo
+	models          []ModelInfo
 	defaultProvider string
 	defaultModel    string
 	setProvider     string
@@ -19,7 +17,7 @@ type mockModelLookup struct {
 	setErr          error
 }
 
-func (m *mockModelLookup) ListModels() ([]engine.ModelInfo, error) {
+func (m *mockModelLookup) ListModels() ([]ModelInfo, error) {
 	return m.models, nil
 }
 
@@ -33,20 +31,21 @@ func (m *mockModelLookup) SetDefaultModel(provider, model string) error {
 	return m.setErr
 }
 
-func testModels() []engine.ModelInfo {
-	return []engine.ModelInfo{
-		{ProviderID: "anthropic", ModelID: "claude-sonnet-4-20250514", Context: 200000, Output: 16000},
-		{ProviderID: "anthropic", ModelID: "claude-opus-4-20250514", Context: 200000, Output: 32000},
-		{ProviderID: "anthropic", ModelID: "claude-haiku-3-5-20241022", Context: 200000, Output: 8192},
+func testModels() []ModelInfo {
+	return []ModelInfo{
 		{ProviderID: "openai", ModelID: "gpt-4o", Context: 128000, Output: 16384},
+		{ProviderID: "openai", ModelID: "gpt-4o-mini", Context: 128000, Output: 16384},
+		{ProviderID: "gemini", ModelID: "gemini-2.0-flash", Context: 1000000, Output: 8192},
+		{ProviderID: "copilot", ModelID: "gpt-5-codex", Context: 272000, Output: 100000},
+		{ProviderID: "copilot", ModelID: "gpt-5.1-codex", Context: 272000, Output: 100000},
 	}
 }
 
 func TestModelListTool(t *testing.T) {
 	lookup := &mockModelLookup{
 		models:          testModels(),
-		defaultProvider: "anthropic",
-		defaultModel:    "claude-sonnet-4-20250514",
+		defaultProvider: "openai",
+		defaultModel:    "gpt-4o",
 	}
 
 	tool := modelListTool(lookup)
@@ -61,43 +60,43 @@ func TestModelListTool(t *testing.T) {
 	}
 
 	output := result.(string)
-	if !strings.Contains(output, "anthropic") {
-		t.Error("expected output to contain 'anthropic'")
+	if !strings.Contains(output, "openai") {
+		t.Error("expected output to contain 'openai'")
 	}
-	if !strings.Contains(output, "claude-sonnet-4-20250514") {
-		t.Error("expected output to contain 'claude-sonnet-4-20250514'")
+	if !strings.Contains(output, "gpt-4o") {
+		t.Error("expected output to contain 'gpt-4o'")
 	}
 	if !strings.Contains(output, "**(default)**") {
 		t.Error("expected output to mark the default model")
 	}
-	if !strings.Contains(output, "openai") {
-		t.Error("expected output to contain 'openai'")
+	if !strings.Contains(output, "gemini") {
+		t.Error("expected output to contain 'gemini'")
 	}
 }
 
 func TestModelSetDefaultExactMatch(t *testing.T) {
 	lookup := &mockModelLookup{
 		models:          testModels(),
-		defaultProvider: "anthropic",
-		defaultModel:    "claude-sonnet-4-20250514",
+		defaultProvider: "openai",
+		defaultModel:    "gpt-4o",
 	}
 
 	tool := modelSetDefaultTool(lookup)
 
 	result, err := tool.Handler(context.Background(), map[string]interface{}{
-		"model": "claude-opus-4-20250514",
+		"model": "gpt-4o-mini",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if lookup.setProvider != "anthropic" {
-		t.Errorf("expected provider 'anthropic', got '%s'", lookup.setProvider)
+	if lookup.setProvider != "openai" {
+		t.Errorf("expected provider 'openai', got '%s'", lookup.setProvider)
 	}
-	if lookup.setModel != "claude-opus-4-20250514" {
-		t.Errorf("expected model 'claude-opus-4-20250514', got '%s'", lookup.setModel)
+	if lookup.setModel != "gpt-4o-mini" {
+		t.Errorf("expected model 'gpt-4o-mini', got '%s'", lookup.setModel)
 	}
-	if !strings.Contains(result.(string), "claude-opus-4-20250514") {
+	if !strings.Contains(result.(string), "gpt-4o-mini") {
 		t.Errorf("expected success message, got: %v", result)
 	}
 }
@@ -105,26 +104,26 @@ func TestModelSetDefaultExactMatch(t *testing.T) {
 func TestModelSetDefaultFuzzyMatch(t *testing.T) {
 	lookup := &mockModelLookup{
 		models:          testModels(),
-		defaultProvider: "anthropic",
-		defaultModel:    "claude-sonnet-4-20250514",
+		defaultProvider: "openai",
+		defaultModel:    "gpt-4o",
 	}
 
 	tool := modelSetDefaultTool(lookup)
 
 	result, err := tool.Handler(context.Background(), map[string]interface{}{
-		"model": "opus",
+		"model": "gemini-2.0",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if lookup.setProvider != "anthropic" {
-		t.Errorf("expected provider 'anthropic', got '%s'", lookup.setProvider)
+	if lookup.setProvider != "gemini" {
+		t.Errorf("expected provider 'gemini', got '%s'", lookup.setProvider)
 	}
-	if lookup.setModel != "claude-opus-4-20250514" {
-		t.Errorf("expected model 'claude-opus-4-20250514', got '%s'", lookup.setModel)
+	if lookup.setModel != "gemini-2.0-flash" {
+		t.Errorf("expected model 'gemini-2.0-flash', got '%s'", lookup.setModel)
 	}
-	if !strings.Contains(result.(string), "opus") {
+	if !strings.Contains(result.(string), "gemini-2.0") {
 		t.Errorf("expected success message, got: %v", result)
 	}
 }
@@ -132,24 +131,24 @@ func TestModelSetDefaultFuzzyMatch(t *testing.T) {
 func TestModelSetDefaultFuzzyWithProvider(t *testing.T) {
 	lookup := &mockModelLookup{
 		models:          testModels(),
-		defaultProvider: "anthropic",
-		defaultModel:    "claude-sonnet-4-20250514",
+		defaultProvider: "openai",
+		defaultModel:    "gpt-4o",
 	}
 
 	tool := modelSetDefaultTool(lookup)
 
 	result, err := tool.Handler(context.Background(), map[string]interface{}{
-		"model":    "haiku",
-		"provider": "anthropic",
+		"model":    "5.1",
+		"provider": "copilot",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if lookup.setModel != "claude-haiku-3-5-20241022" {
-		t.Errorf("expected model 'claude-haiku-3-5-20241022', got '%s'", lookup.setModel)
+	if lookup.setModel != "gpt-5.1-codex" {
+		t.Errorf("expected model 'gpt-5.1-codex', got '%s'", lookup.setModel)
 	}
-	if !strings.Contains(result.(string), "haiku") {
+	if !strings.Contains(result.(string), "5.1") {
 		t.Errorf("expected success message, got: %v", result)
 	}
 }
@@ -157,15 +156,15 @@ func TestModelSetDefaultFuzzyWithProvider(t *testing.T) {
 func TestModelSetDefaultAmbiguous(t *testing.T) {
 	lookup := &mockModelLookup{
 		models:          testModels(),
-		defaultProvider: "anthropic",
-		defaultModel:    "claude-sonnet-4-20250514",
+		defaultProvider: "openai",
+		defaultModel:    "gpt-4o",
 	}
 
 	tool := modelSetDefaultTool(lookup)
 
-	// "claude" matches multiple anthropic models
+	// "gpt" matches multiple openai + copilot models
 	_, err := tool.Handler(context.Background(), map[string]interface{}{
-		"model": "claude",
+		"model": "gpt",
 	})
 	if err == nil {
 		t.Fatal("expected error for ambiguous match")
@@ -178,8 +177,8 @@ func TestModelSetDefaultAmbiguous(t *testing.T) {
 func TestModelSetDefaultNoMatch(t *testing.T) {
 	lookup := &mockModelLookup{
 		models:          testModels(),
-		defaultProvider: "anthropic",
-		defaultModel:    "claude-sonnet-4-20250514",
+		defaultProvider: "openai",
+		defaultModel:    "gpt-4o",
 	}
 
 	tool := modelSetDefaultTool(lookup)
@@ -220,7 +219,7 @@ func TestModelSetDefaultSetError(t *testing.T) {
 	tool := modelSetDefaultTool(lookup)
 
 	_, err := tool.Handler(context.Background(), map[string]interface{}{
-		"model": "gpt-4o",
+		"model": "gemini-2.0-flash",
 	})
 	if err == nil {
 		t.Fatal("expected error when set fails")
