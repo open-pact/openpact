@@ -1,0 +1,47 @@
+[Unit]
+Description=OpenPact — self-hosted AI assistant
+Documentation=https://github.com/open-pact/openpact
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# The user under which the binary runs. Create it with:
+#   useradd --system --create-home --home-dir /var/lib/openpact openpact
+User=openpact
+Group=openpact
+
+# Workspace owns secure/data (auth, sessions, JWT secret, etc.) and
+# ai-data (SOUL/USER/MEMORY, scripts). Must be readable+writable by the
+# service user. Create before first start:
+#   install -d -o openpact -g openpact -m 750 /var/lib/openpact
+Environment=WORKSPACE_PATH=/var/lib/openpact
+Environment=ADMIN_BIND=127.0.0.1:8888
+
+# Optional: enable a specific chat provider by dropping its token into
+# /etc/openpact/env (keep the file 0600, owned by the service user).
+EnvironmentFile=-/etc/openpact/env
+
+ExecStart=/usr/local/bin/openpact start
+Restart=on-failure
+RestartSec=5s
+
+# Hardening: the binary only needs to read its workspace and bind the
+# admin port. No privilege escalation, no new network sockets outside
+# what it explicitly opens, no filesystem access beyond the workspace.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openpact
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
