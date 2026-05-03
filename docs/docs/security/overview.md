@@ -6,193 +6,198 @@ description: Security philosophy, threat model, and defense in depth
 
 # Security Overview
 
-OpenPact is designed with security as a foundational principle. This page outlines our security philosophy, threat model, and the defense-in-depth approach that protects your systems.
+OpenPact is designed with security as a foundational principle. This page outlines the security philosophy, threat model, and the defense-in-depth approach that protects your systems.
 
 ## Security Philosophy
 
-OpenPact operates on several core security principles:
+### 1. Assume the AI is untrusted
 
-### 1. Assume AI Is Untrusted
+While AI assistants are powerful tools, they should not be given unrestricted access to sensitive resources. OpenPact treats AI-generated code and tool calls as untrusted input that must be validated and sandboxed.
 
-While AI assistants are powerful tools, they should not be given unrestricted access to sensitive resources. OpenPact treats AI-generated code and requests as untrusted input that must be validated and sandboxed.
-
-### 2. Defense in Depth
+### 2. Defense in depth
 
 No single security control is sufficient. OpenPact layers multiple security mechanisms so that if one fails, others continue to protect the system.
 
-### 3. Principle of Least Privilege
+### 3. Principle of least privilege
 
-Every component receives only the minimum permissions necessary to perform its function. Scripts cannot access resources they don't need, and the AI cannot see secrets it shouldn't know.
+Every component receives only the minimum permissions necessary. Tools cannot reach resources they don't need; the AI cannot see secrets it shouldn't know.
 
-### 4. Secure by Default
+### 4. Secure by default
 
 OpenPact ships with secure defaults. Features that could compromise security are opt-in, and dangerous operations require explicit approval.
 
-### 5. Transparent Security
+### 5. Transparent security
 
 Security mechanisms should be understandable. Rather than relying on obscurity, OpenPact's security model is documented and auditable.
 
 ## Threat Model
 
-OpenPact protects against several threat categories:
+### Malicious / hijacked agent behavior
 
-### Malicious Scripts
-
-**Threat:** AI generates a script that attempts to steal secrets, access unauthorized resources, or damage the system.
+**Threat:** prompt injection, jailbreaks, or a mis-aligned model attempt to call destructive tools, exfiltrate secrets, or pivot to unauthorized systems.
 
 **Mitigations:**
-- Starlark sandboxing prevents filesystem and system access
-- Script approval workflow requires human review
-- Hash-based verification detects modifications
-- Automatic secret redaction prevents exfiltration
 
-### Credential Theft
+- **Tool registry as the security perimeter** — the agent can only call tools that have been registered. There is no shell, no `eval`, no arbitrary file IO unless explicitly registered.
+- **In-tool scoping** — workspace tools enforce the `ai-data/` boundary; vault tools are confined to the configured vault path; chat-send tools respect allow lists; web fetch is HTTPS-only with a size cap.
+- **Starlark sandbox** — script execution has no filesystem access, only HTTP, with timeouts and memory caps.
+- **Secret redaction** — values returned by `secrets.get()` are scrubbed from script output before the agent ever sees them.
 
-**Threat:** An attacker or malicious AI attempts to extract API keys, tokens, or other credentials.
+### Credential theft
 
-**Mitigations:**
-- Environment variable filtering: only LLM provider keys are passed to the AI process
-- Sensitive tokens (DISCORD_TOKEN, GITHUB_TOKEN, etc.) are excluded from the AI's environment
-- Automatic redaction of secret values in all script output
-- Secrets stored in the `secure/data/` directory, which is owner-only (mode 700) and inaccessible to the AI user
-
-### Privilege Escalation
-
-**Threat:** A compromised component attempts to gain additional access or capabilities.
+**Threat:** an attacker (or a successful prompt injection) tries to extract API keys, tokens, or other credentials.
 
 **Mitigations:**
-- Two-user model: `openpact-system` (orchestrator) and `openpact-ai` (AI engine)
-- AI process runs as `openpact-ai` with restricted file permissions
-- OpenCode's built-in tools (bash, write, edit, read, etc.) are disabled via configuration
-- AI can only interact with the system through registered MCP tools
-- Linux file permissions enforce access boundaries independent of application logic
 
-### Denial of Service
+- LLM provider tokens are stored in `secure/data/stackllm_auth.json` (mode `0600`) and are not exposed to any registered tool.
+- Starlark secrets are AES-256-GCM encrypted at rest in `op_secrets`; decrypted in-memory only.
+- Output sanitisation: Starlark output is scanned for any literal secret value and replaced with `[REDACTED:NAME]` before reaching the agent.
+- Chat-provider tokens (`DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, etc.) live in `op_chat_providers` and are never surfaced to tool calls.
+- The JWT signing key (`secure/data/jwt_secret`) is not exposed to any tool path.
 
-**Threat:** Resource exhaustion through infinite loops, excessive memory usage, or network flooding.
+### Privilege escalation
 
-**Mitigations:**
-- Script execution timeouts
-- Memory limits on script execution
-- Rate limiting on API endpoints
-- Resource quotas per script
-
-### Unauthorized Access
-
-**Threat:** Attackers attempt to access the Admin UI or API without credentials.
+**Threat:** a compromised tool implementation tries to read outside its scope, or the agent tries to obtain capabilities it wasn't granted.
 
 **Mitigations:**
-- JWT-based authentication with short-lived tokens
-- Mandatory first-run setup (no default credentials)
-- Rate limiting on login attempts
-- Optional IP allowlisting
 
-## Defense in Depth Architecture
+- **No new capability path at runtime.** Tools are registered once at boot (`mcp.RegisterAllTools` → `engine.RegisterMCPTools`) and the registry is closed. Adding a tool requires editing Go code and rebuilding.
+- **Filesystem permissions** — `secure/` is mode `0700`, `secure/data/*` files are `0600`. Even if a tool implementation has a path-traversal bug, the OS refuses the read.
+- **JWT-protected admin API** — the `/api/*` surface (including the mounted `/api/engine/*` routes) sits behind `withAuth`; the only exception is the narrow whitelist in `RequireSetupMiddleware` that lets the setup wizard sign in to a first provider.
+- **Container hardening** — the Docker image runs as a single unprivileged user; capabilities can be dropped via `cap_drop: [ALL]`; rootfs can be made read-only.
+
+### Denial of service
+
+**Threat:** resource exhaustion through infinite loops, excessive memory, or network flooding.
+
+**Mitigations:**
+
+- Starlark execution and memory caps (`/settings/advanced`).
+- Token-bucket rate limiter on the public surfaces (`/settings/advanced`).
+- Per-session mutex serializes incoming chat events; no unbounded fan-out.
+- Web-fetch response size cap.
+
+### Unauthorized access
+
+**Threat:** attackers attempt to access the admin UI or API without credentials.
+
+**Mitigations:**
+
+- JWT auth (HS256), short-lived access tokens, refresh-cookie rotation.
+- Mandatory first-run setup wizard — there is no default admin account.
+- Rate limiting in front of login attempts.
+- Optional reverse-proxy IP allowlisting / mTLS for production.
+
+## Defense in Depth
 
 ```
-Layer 1: Linux User Separation
+Layer 1: Tool Registry Boundary
 ┌─────────────────────────────────────────────────────────────────┐
-│  openpact-system (orchestrator, admin UI, secrets)              │
-│  openpact-ai (AI engine, MCP tools only)                       │
-│  File permissions enforce boundary: secure/ 700, ai-data/ 750  │
+│ The agent runs inside the OpenPact process. It can only call    │
+│ tools that were registered in stackllm's tools.Registry at boot.│
+│ No registration → not callable. There is no shell tool.         │
 └─────────────────────────────────────────────────────────────────┘
 
-Layer 2: Application-Level Tool Restriction
+Layer 2: In-Tool Authorization
 ┌─────────────────────────────────────────────────────────────────┐
-│  OpenCode built-in tools disabled (bash, write, edit, etc.)    │
-│  MCP server provides controlled tool access                     │
-│  Environment variable allowlist (no secrets leaked)             │
+│ Each tool enforces its own scoping in code:                     │
+│  • workspace_*  → ai-data/ only, path validation                │
+│  • web_fetch    → HTTP/HTTPS only, size capped                  │
+│  • script_run   → admin approval workflow + Starlark sandbox    │
+│  • discord_send → bot's configured allow list                   │
 └─────────────────────────────────────────────────────────────────┘
 
-Layer 3: Script Sandboxing
+Layer 3: Filesystem Permissions
 ┌─────────────────────────────────────────────────────────────────┐
-│  Starlark sandbox: no filesystem, no system commands            │
-│  Script approval workflow: human review required                │
-│  Secret redaction: values replaced with [REDACTED] in output   │
+│ secure/        0700  — system data, JWT key, encryption key,    │
+│                        provider tokens, SQLite DB.              │
+│ secure/data/*  0600  — sensitive files.                         │
+│ ai-data/       0755  — AI-accessible.                           │
 └─────────────────────────────────────────────────────────────────┘
 
-Layer 4: Container Isolation
+Layer 4: Container / Runtime Isolation
 ┌─────────────────────────────────────────────────────────────────┐
-│  Docker isolation, non-root execution                           │
-│  Entrypoint sets file permissions before dropping privileges    │
-│  Optional: read-only root filesystem, dropped capabilities     │
+│ Single unprivileged user inside Docker / systemd unit.          │
+│ Optional: read-only rootfs, cap_drop: ALL, no-new-privileges.   │
+│ Reverse-proxy TLS termination in front of the admin UI.         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Security Layers Explained
 
-### Layer 1: Linux User Separation
+### Layer 1: Tool registry
 
-**Purpose:** Enforce access boundaries at the OS level.
-
-| Control | Description |
-|---------|-------------|
-| Two-user model | `openpact-system` owns secrets/config, `openpact-ai` runs the AI |
-| File permissions | `secure/` (700), `ai-data/` (750), `ai-data/memory/` (770), `secure/config.yaml` (600) |
-| Entrypoint launch | AI process launched as `openpact-ai` by Docker entrypoint via `gosu` |
-| Group membership | Both users in `openpact` group for controlled shared access |
-
-### Layer 2: Application Tool Restriction
-
-**Purpose:** Ensure the AI can only use explicitly registered MCP tools.
+**Purpose:** make capability addition impossible at runtime.
 
 | Control | Description |
 |---------|-------------|
-| Disabled built-in tools | bash, write, edit, read, grep, glob, list, patch all disabled |
-| MCP-only access | AI interacts with system exclusively through MCP tool calls |
-| Environment filtering | Only PATH, HOME, LANG, TZ, TMPDIR, XDG_*, and LLM keys passed |
-| OpenCode config | Tool restrictions enforced via OPENCODE_CONFIG_CONTENT |
+| Static registration | `mcp.RegisterAllTools` populates `tools.Registry` at boot; no runtime additions. |
+| In-process invocation | The agent's tool calls are Go function calls inside the same binary; no external surface to attack. |
+| No shell / eval | No tool exposes shell execution, dynamic Go code, or arbitrary file IO. |
 
-### Layer 3: Script Sandboxing
+### Layer 2: In-tool authorization
 
-**Purpose:** Contain execution of untrusted code.
-
-| Control | Description |
-|---------|-------------|
-| Starlark sandbox | No system access from scripts |
-| Execution limits | Timeout and memory caps |
-| Script approval | Human review before execution |
-| Output sanitization | Redact sensitive data in results |
-
-### Layer 4: Container Isolation
-
-**Purpose:** Secure the runtime environment.
+**Purpose:** ensure each tool can only do what its purpose requires.
 
 | Control | Description |
 |---------|-------------|
-| Docker isolation | Container boundaries |
-| Non-root execution | Both users are non-root |
-| Entrypoint permissions | File permissions set at container start |
-| Resource limits | CPU/memory quotas via Docker |
+| Workspace boundary | `workspace_*` validates paths against the `ai-data/` root, rejecting traversal attempts. |
+| Vault scope | `vault_*` constrains operations to the configured vault path. |
+| HTTP-only fetch | `web_fetch` rejects `file://`, restricts to `http://` and `https://`, caps response size. |
+| Allow lists | Chat-provider sends respect the configured user/channel allow lists. |
+| Sandbox | Starlark execution has no filesystem, no shell; configurable wall-clock and memory caps. |
+
+### Layer 3: Filesystem permissions
+
+**Purpose:** belt-and-braces backup if a tool implementation has a path-traversal bug.
+
+| Control | Description |
+|---------|-------------|
+| `secure/` 0700 | Owner-only; nothing in `secure/` is readable by other users on the host. |
+| `secure/data/*` 0600 | Token files, encryption keys, the SQLite DB. |
+| `ai-data/` 0755 | AI-accessible portion of the workspace. |
+
+### Layer 4: Container / runtime
+
+**Purpose:** secure the runtime environment.
+
+| Control | Description |
+|---------|-------------|
+| Single unprivileged user | Image runs as `openpact`, never root. |
+| Optional read-only rootfs | Binary doesn't write outside `/workspace`. |
+| Optional capability drop | `cap_drop: [ALL]` works fine. |
+| systemd hardening | The shipped unit pins `NoNewPrivileges`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`. |
+| Reverse-proxy TLS | Production: terminate TLS in nginx/Caddy/Traefik in front of `:8888`. |
 
 ## Security Checklist
 
-### Before Deployment
+### Before deployment
 
-- [ ] Configure TLS (use reverse proxy or native HTTPS)
-- [ ] Set strong admin password
-- [ ] Review default configuration
-- [ ] Set up monitoring and alerting
-- [ ] Configure IP allowlisting if possible
+- [ ] Configure TLS (use a reverse proxy or terminate TLS at the load balancer).
+- [ ] Set a strong admin password during the setup wizard.
+- [ ] Restrict the admin UI to localhost or behind authenticated reverse proxy if internet-exposed.
+- [ ] Set up monitoring and alerting for the health endpoints.
+- [ ] Configure IP allowlisting at the proxy level if applicable.
+- [ ] Decide on a secrets-management strategy (admin UI / `op_secrets` vs external secrets manager injecting env vars).
 
-### During Operation
+### During operation
 
-- [ ] Monitor login attempts for anomalies
-- [ ] Review pending scripts promptly
-- [ ] Rotate secrets on schedule
-- [ ] Keep OpenPact updated
-- [ ] Audit script execution logs
+- [ ] Review pending Starlark scripts promptly.
+- [ ] Rotate provider tokens on schedule (re-sign-in via `/engine`).
+- [ ] Rotate the JWT secret periodically (delete `secure/data/jwt_secret`; OpenPact regenerates on next boot — all sessions forced to re-login).
+- [ ] Keep OpenPact and the host updated.
+- [ ] Audit the script execution and tool-use logs.
 
-### Incident Response
+### Incident response
 
-- [ ] Know how to revoke JWT secrets
-- [ ] Have a process to disable compromised scripts
-- [ ] Maintain backups of configuration
-- [ ] Document escalation procedures
+- [ ] Know how to revoke admin credentials (delete user from the admin UI or directly in `op_users`).
+- [ ] Have a process to disable compromised scripts (`script_reload` after removing the file from `ai-data/scripts/`).
+- [ ] Maintain backups of `secure/data/` (encrypted).
+- [ ] Document escalation procedures.
 
 ## Next Steps
 
-- [Principle of Least Privilege](./principle-of-least-privilege) - Understand access restrictions
-- [Secret Handling](./secret-handling) - Learn how secrets are protected
-- [Docker Security](./docker-security) - Container isolation details
-- [Script Sandboxing](./script-sandboxing) - Starlark security model
+- [Principle of Least Privilege](./principle-of-least-privilege) — tool registry, in-tool authorization, filesystem perms.
+- [Secret Handling](./secret-handling) — how secrets are stored, redacted, and rotated.
+- [Docker Security](./docker-security) — container hardening recipes.
+- [Script Sandboxing](./script-sandboxing) — Starlark security model.

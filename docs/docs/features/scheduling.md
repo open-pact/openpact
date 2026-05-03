@@ -136,7 +136,7 @@ Navigate to the **Schedules** page in the Admin UI to create, edit, enable/disab
 Use the [Schedule REST endpoints](/docs/api/admin-api#schedule-endpoints) for programmatic access:
 
 ```bash
-curl -X POST http://localhost:8080/api/schedules \
+curl -X POST http://localhost:8888/api/schedules \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{

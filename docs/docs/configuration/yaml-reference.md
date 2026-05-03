@@ -5,350 +5,146 @@ sidebar_position: 2
 
 # YAML Configuration Reference
 
-Complete reference for all `openpact.yaml` configuration options.
+The bootstrap file lives at `<workspace>/secure/config.yaml` (override with `CONFIG_PATH`). It only needs to carry the values OpenPact must know **before** it can open the SQLite database. Everything else is configured through the admin UI and persisted in `op_*` tables.
+
+The file is optional — every field has a default, and the binary boots from sensible defaults if no file is present.
 
 ## workspace
 
-Workspace configuration for file storage.
+Workspace path configuration.
 
 ```yaml
 workspace:
-  path: ./workspace
+  path: /workspace
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | string | `./workspace` | Path to the workspace directory |
+| `path` | string | `/workspace` | Workspace root. Override with `WORKSPACE_PATH`. |
 
-The workspace is the top-level directory containing two subdirectories:
-- `secure/` — System-only: configuration (`secure/config.yaml`) and admin data (`secure/data/` — users, approvals, secrets)
-- `ai-data/` — AI-accessible: context files (SOUL.md, USER.md, MEMORY.md), memory files, Starlark scripts (`scripts/`), skills (`skills/`), and any files the AI creates or modifies
+The workspace contains:
 
-All paths are derived from `WORKSPACE_PATH`. The config file itself lives at `secure/config.yaml` within the workspace.
+- `secure/` — system-only (mode `0700`): `config.yaml`, `data/jwt_secret`, `data/data_encryption_key`, `data/stackllm_auth.json`, `data/stackllm_config.json`, `data/stackllm.db`.
+- `ai-data/` — AI-accessible (mode `0755`): `SOUL.md`, `USER.md`, `MEMORY.md`, `memory/`, `scripts/`, `skills/`, plus any files MCP tools write.
 
-## discord
+See [Workspace](../features/workspace) for the full layout.
 
-Discord bot configuration.
+## engine
+
+The only knob the YAML exposes is the SQLite path; everything else (provider credentials, default model, recent models) is managed by stackllm under `<workspace>/secure/data/`.
+
+```yaml
+engine:
+  db_path: ""
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `db_path` | string | `<workspace>/secure/data/stackllm.db` | Override the SQLite path. The DB carries both stackllm's `stackllm_*` tables and OpenPact's `op_*` tables. |
+
+The supported providers (OpenAI / GitHub Copilot / Google Gemini / Ollama) are baked into the binary. Sign in to them via the admin UI at `/engine`. Anthropic is intentionally not surfaced.
+
+## admin
+
+Admin UI bind + Starlark allowlist.
+
+```yaml
+admin:
+  enabled: true
+  bind: "localhost:8888"
+  allowlist:
+    - "trusted_script.star"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Serve the admin UI. Disabling it doesn't disable `/api/*` — those still run; the SPA simply isn't mounted. |
+| `bind` | string | `localhost:8888` | Bind address. Override with `ADMIN_BIND`. |
+| `allowlist` | string[] | `[]` | Starlark script filenames that are pre-approved (no manual approval prompt before first run). |
+
+## starlark
+
+Starlark sandbox limits.
+
+```yaml
+starlark:
+  max_execution_ms: 30000
+  max_memory_mb: 128
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_execution_ms` | integer | `30000` | Wall-clock execution cap per script. |
+| `max_memory_mb` | integer | `128` | Memory cap per script. |
+
+:::tip Mutable at runtime via the admin UI
+These same fields are surfaced in `/settings/advanced` and can be tuned without a YAML edit. The DB value wins after the first wizard completion. The values here are the bootstrap defaults used on first boot.
+:::
+
+Starlark **secrets** are not configured in YAML any more — manage them at `/secrets` in the admin UI. They are AES-256-GCM encrypted at rest in `op_secrets`.
+
+## discord (bootstrap defaults)
+
+Discord defaults to enabled with no allow-lists. These values are picked up on first boot only and become editable in `/providers` thereafter.
 
 ```yaml
 discord:
   enabled: true
-  allowed_users:
-    - "123456789012345678"
-    - "234567890123456789"
-  allowed_channels:
-    - "987654321098765432"
+  allowed_users: []
+  allowed_chans: []
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable/disable Discord integration |
-| `allowed_users` | string[] | `[]` | Discord user IDs allowed to interact (empty = allow all) |
-| `allowed_channels` | string[] | `[]` | Channel IDs where bot responds (empty = all channels) |
+| `enabled` | boolean | `true` | Whether the Discord adapter starts. |
+| `allowed_users` | string[] | `[]` | User IDs allowed to DM (empty = anyone). |
+| `allowed_chans` | string[] | `[]` | Channel IDs the bot responds in (empty = all). |
 
-:::tip User and Channel IDs
-Discord IDs are numeric strings. Enable Developer Mode in Discord settings to copy IDs by right-clicking on users or channels.
-:::
-
-## telegram
-
-Telegram bot configuration.
-
-```yaml
-telegram:
-  enabled: true
-  allowed_users:
-    - "123456789"
-    - "johndoe"
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable/disable Telegram integration |
-| `allowed_users` | string[] | `[]` | Telegram user IDs or usernames allowed to interact (empty = allow all) |
-
-:::tip User IDs
-Telegram user IDs are numeric. You can find yours by messaging [@userinfobot](https://t.me/userinfobot). Usernames (without `@`) are also accepted.
-:::
-
-## slack
-
-Slack bot configuration (Socket Mode).
-
-```yaml
-slack:
-  enabled: true
-  allowed_users:
-    - "U12345678"
-  allowed_chans:
-    - "C12345678"
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable/disable Slack integration |
-| `allowed_users` | string[] | `[]` | Slack user IDs allowed to interact (empty = allow all) |
-| `allowed_chans` | string[] | `[]` | Slack channel IDs where bot responds (empty = all channels) |
-
-Requires both `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` environment variables. See [Slack Integration](../features/slack-integration) for setup instructions.
-
-## vault
-
-Obsidian vault integration for note storage.
-
-```yaml
-vault:
-  path: /vault
-  git_repo: git@github.com:username/vault.git
-  auto_sync: true
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `path` | string | - | Local path to the vault directory |
-| `git_repo` | string | - | Git repository URL for syncing |
-| `auto_sync` | boolean | `false` | Automatically sync changes to git |
-
-When `auto_sync` is enabled, changes made through `vault_write` will be automatically committed and pushed to the configured git repository.
-
-## calendars
-
-iCal calendar feeds for event reading.
-
-```yaml
-calendars:
-  - name: Personal
-    url: https://calendar.google.com/calendar/ical/example/basic.ics
-  - name: Work
-    url: https://outlook.office365.com/owa/calendar/abc123/calendar.ics
-```
-
-Each calendar entry:
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | Yes | Display name for the calendar |
-| `url` | string | Yes | iCal feed URL |
-
-Supported calendar formats:
-- Google Calendar (iCal export)
-- Microsoft Outlook (ICS link)
-- Apple iCloud Calendar
-- Any standard iCal/ICS feed
-
-## github
-
-GitHub integration for issue management.
-
-```yaml
-github:
-  enabled: true
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable GitHub integration |
-
-Requires `GITHUB_TOKEN` environment variable with appropriate scopes:
-- `public_repo` for public repositories
-- `repo` for private repositories
-
-## starlark
-
-Sandboxed scripting configuration.
-
-```yaml
-starlark:
-  enabled: true
-  max_execution_ms: 30000
-  secrets:
-    WEATHER_API_KEY: "${WEATHER_API_KEY}"
-    DATABASE_TOKEN: "${DATABASE_TOKEN}"
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable Starlark scripting |
-| `max_execution_ms` | integer | `30000` | Maximum script execution time (ms) |
-| `secrets` | map | `{}` | Secrets available to scripts |
-
-Scripts are always stored in the `ai-data/scripts/` subdirectory of the workspace.
-
-### Secrets Configuration
-
-Secrets are key-value pairs available to scripts via `secrets.get("KEY")`. Use environment variable substitution for actual values:
-
-```yaml
-starlark:
-  secrets:
-    # Direct value (not recommended - use env vars)
-    STATIC_KEY: "hardcoded-value"
-
-    # From environment (recommended)
-    API_KEY: "${MY_API_KEY}"
-```
-
-:::caution Secret Safety
-Values from `secrets.get()` are automatically redacted from any output returned to the AI. The AI never sees the actual secret values.
-:::
-
-## engine
-
-AI engine configuration.
-
-```yaml
-engine:
-  type: opencode
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  port: 4098
-  password: ""
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | `opencode` | Engine type: `opencode` |
-| `provider` | string | `anthropic` | LLM provider for OpenCode |
-| `model` | string | `claude-sonnet-4-20250514` | Model identifier |
-| `port` | integer | `4098` | Port for `opencode serve` (must match the entrypoint's launch port) |
-| `password` | string | `""` | Optional password for the OpenCode server API (sets `OPENCODE_SERVER_PASSWORD`) |
-
-OpenPact connects to an externally-managed `opencode serve` instance via REST API. In Docker, the entrypoint launches OpenCode as `openpact-ai` with a restart loop on the configured port; the Go engine is a pure HTTP client. See the [OpenCode server documentation](https://opencode.ai/docs/server/) for details on the underlying API.
-
-### Supported Providers
-
-| Provider | Provider Value | API Key Variable |
-|----------|---------------|------------------|
-| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` |
-| OpenAI | `openai` | `OPENAI_API_KEY` |
-| Google | `google` | `GOOGLE_API_KEY` |
-| Ollama | `ollama` | - (local) |
-| Azure OpenAI | `azure` | `AZURE_OPENAI_API_KEY` |
-
-## logging
-
-Logging configuration.
-
-```yaml
-logging:
-  level: info
-  json: false
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `level` | string | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `json` | boolean | `false` | Output logs in JSON format |
-
-### Log Levels
-
-| Level | Description |
-|-------|-------------|
-| `debug` | Verbose debugging information |
-| `info` | Normal operational messages |
-| `warn` | Warning conditions |
-| `error` | Error conditions only |
-
-### JSON Logging
-
-Enable JSON logging for production environments and log aggregation:
-
-```yaml
-logging:
-  json: true
-```
-
-Output example:
-```json
-{"level":"info","timestamp":"2024-01-15T10:30:00Z","message":"Discord connected","component":"discord"}
-```
-
-## server
-
-HTTP server configuration for health checks and metrics.
-
-```yaml
-server:
-  health_addr: ":8080"
-  rate_limit:
-    rate: 10
-    burst: 20
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `health_addr` | string | `:8080` | Address for health check server |
-| `rate_limit.rate` | integer | `10` | Requests per second limit |
-| `rate_limit.burst` | integer | `20` | Maximum burst size |
-
-### Health Endpoints
-
-When the server is running, these endpoints are available:
-
-| Endpoint | Description |
-|----------|-------------|
-| `/health` | Detailed health status with component checks |
-| `/healthz` | Kubernetes-style liveness probe |
-| `/ready` | Readiness check |
-| `/metrics` | Prometheus-format metrics |
-
-### Rate Limiting
-
-Rate limiting applies to incoming requests. The token bucket algorithm allows:
-- `rate` sustained requests per second
-- Up to `burst` requests in a short burst
+The Discord, Slack, and Telegram **tokens** never go in YAML. Set them via `/providers` or via the corresponding env-var fallback (`DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN`). The DB row wins when both are set.
 
 ## Complete Example
 
 ```yaml
-# Complete openpact.yaml example
+# Everything below is optional. Defaults are reasonable for a single-user
+# deployment listening on localhost:8888.
 
 workspace:
   path: /workspace
 
-discord:
+engine:
+  db_path: ""                  # Use the default location.
+
+admin:
   enabled: true
-  allowed_users:
-    - "123456789012345678"
-
-telegram:
-  enabled: false
-
-slack:
-  enabled: false
-
-vault:
-  path: /vault
-  git_repo: git@github.com:user/my-vault.git
-  auto_sync: true
-
-calendars:
-  - name: Personal
-    url: https://calendar.google.com/calendar/ical/example/basic.ics
-
-github:
-  enabled: true
+  bind: "localhost:8888"
+  allowlist: []
 
 starlark:
-  enabled: true
   max_execution_ms: 30000
-  secrets:
-    WEATHER_API_KEY: "${WEATHER_API_KEY}"
+  max_memory_mb: 128
 
-engine:
-  type: opencode
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  port: 4098
-  password: ""
-
-logging:
-  level: info
-  json: false
-
-server:
-  health_addr: ":8080"
-  rate_limit:
-    rate: 10
-    burst: 20
+discord:
+  enabled: true
+  allowed_users: []
+  allowed_chans: []
 ```
+
+## What's NOT in the YAML
+
+Settings that used to live in YAML and now live in the database (edited from the admin UI):
+
+| Old field | New home |
+|-----------|----------|
+| `engine.type` / `engine.port` / `engine.password` / `engine.hostname` | _Removed — stackllm is in-process._ |
+| `engine.provider` / `engine.model` | `/engine` (default model picker) |
+| `logging.level` / `logging.json` | `/settings/advanced` |
+| `server.health_addr` | `/settings/advanced` |
+| `server.rate_limit.rate` / `.burst` | `/settings/advanced` |
+| `vault.path` / `git_repo` / `auto_sync` | `/integrations` |
+| `calendars[]` | `/integrations` |
+| `github.enabled` | `/integrations` |
+| `starlark.secrets` | `/secrets` |
+| `slack.*` / `telegram.*` (full block, including tokens) | `/providers` |
+| `discord.token` | `/providers` (or `DISCORD_TOKEN` env-var fallback) |
+
+This was a deliberate redesign: every runtime-mutable knob is now a single grep `op_kv` lookup away, and the binary cannot be in a state where the YAML and the running process disagree.

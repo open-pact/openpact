@@ -22,40 +22,56 @@ The Admin UI enables administrators to:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Go Application                               │
+│                  OpenPact (single binary)                        │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   MCP Server │  │  Admin API   │  │  Static File Server  │  │
-│  │   (JSON-RPC) │  │  (REST/JSON) │  │  (Embedded SPA)      │  │
-│  │   :3000      │  │  :8080/api   │  │  :8080/              │  │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
-│                           │                    │                 │
-│                           ▼                    ▼                 │
-│                    ┌─────────────────────────────┐              │
-│                    │      JWT Middleware         │              │
-│                    └─────────────────────────────┘              │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  Admin Web Server (port 8888 by default)                  │   │
+│  │                                                            │   │
+│  │  /api/...                  Embedded SPA (Vue 3)           │   │
+│  │  /api/engine/...     →  stackllm web.ManagedHandler        │   │
+│  │  /api/setup,                                               │   │
+│  │   /auth, /scripts,                                         │   │
+│  │   /secrets, /config,                                       │   │
+│  │   /providers,                                              │   │
+│  │   /schedules           ← internal/admin handlers           │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│                              ▼                                   │
+│              ┌─────────────────────────────────┐                │
+│              │   JWT middleware (HS256)         │                │
+│              └─────────────────────────────────┘                │
 │                                                                  │
+│  Health server: separate port (default :8081, configurable      │
+│                  in /settings/advanced)                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 The Admin UI consists of:
 
-- **Vue 3 SPA** - Single-page application embedded in the Go binary
-- **REST API** - JSON-based API endpoints under `/api/`
-- **JWT Authentication** - Secure token-based authentication
+- **Vue 3 SPA** — embedded into the Go binary via `//go:embed`.
+- **REST API** — JSON endpoints under `/api/*`.
+- **`/api/engine/*` mount** — stackllm's `web.ManagedHandler` provides provider login, model selection, SSE chat, individual session GET/DELETE.
+- **JWT auth** — short-lived access tokens (15 min) + refresh-cookie rotation (3-day TTL).
 
 ## First-Run Setup
 
 On first launch, if no admin user exists, OpenPact enters **setup mode**. During setup:
 
-- The MCP server does not start
-- All API endpoints return `503 Service Unavailable`
-- Users are redirected to the `/setup` page
+- All `/api/*` endpoints return `503 Service Unavailable` except a narrow whitelist (`/api/setup/*`, the wizard's provider-login subset of `/api/engine/*`).
+- Users are redirected to the `/setup` page.
 
-### Setup Process
+### Setup Process (3 steps)
 
-1. Navigate to `http://localhost:8080/setup`
+1. **Account** — open `http://localhost:8888/setup` and create the first admin user. The refresh cookie is set immediately so the rest of the wizard can call authenticated endpoints.
+2. **Profile** — fill in `SOUL.md`, `USER.md`, `MEMORY.md`.
+3. **LLM provider** — sign in to OpenAI / Copilot / Gemini / Ollama and pick a default model. The wizard refuses to finish until a default is set.
+
+You can rerun any step from the admin UI later (`/engine` for providers, `/profile` for context files), but the initial wizard runs once.
+
+The flow:
+
+1. Navigate to `http://localhost:8888/setup`
 2. Choose a username (default: `admin`)
 3. Create a password meeting the policy requirements
 4. Confirm the password
@@ -95,9 +111,9 @@ On first launch, if no admin user exists, OpenPact enters **setup mode**. During
 
 After setup completes:
 
-- The setup endpoint is permanently disabled
-- The MCP server starts accepting connections
-- You can log in with your new credentials
+- The setup endpoint is permanently disabled.
+- The agent endpoint (`/api/engine/chat`) becomes generally callable behind the standard JWT middleware.
+- You can log in with your new credentials.
 
 ## Password Policy
 
@@ -116,23 +132,22 @@ Examples of valid passwords:
 
 ## Configuration
 
-Enable the Admin UI in your `openpact.yaml`:
+The admin UI is enabled by default. Override the bind address from `secure/config.yaml`:
 
 ```yaml
 admin:
   enabled: true
-  bind: "0.0.0.0:8080"
-
-  jwt:
-    access_expiry: "15m"    # Short-lived access tokens
-    refresh_expiry: "72h"   # 3-day refresh tokens
-    issuer: "openpact"
-
-  # Optional: Restrict to specific IP ranges
-  allowed_ips:
-    - "10.0.0.0/8"
-    - "192.168.0.0/16"
+  bind: "0.0.0.0:8888"
+  allowlist: []           # Always-approved Starlark scripts
 ```
+
+Or via env var:
+
+```bash
+ADMIN_BIND=0.0.0.0:8888
+```
+
+JWT lifetimes (access: 15 min, refresh: 3 days), the JWT signing algorithm (HS256), and IP allowlisting are not surfaced as YAML/env-var knobs — the values are baked in. If you need IP-level restriction, terminate at a reverse proxy.
 
 :::warning Production Security
 In production, always run the Admin UI behind a reverse proxy with HTTPS. The Admin UI uses secure cookies that require HTTPS in non-localhost environments.

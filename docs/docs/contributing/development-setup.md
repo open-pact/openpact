@@ -9,13 +9,11 @@ This guide walks you through setting up OpenPact for local development.
 
 ## Prerequisites
 
-Before you begin, ensure you have the following installed:
-
-- **Go 1.22+** - [Download Go](https://golang.org/dl/)
-- **Git** - For version control
-- **Docker** (optional) - For container-based development
-- **Make** - For running build commands
-- **Node.js 18+** (optional) - For Admin UI development
+- **Go 1.25+** — [Download Go](https://golang.org/dl/) (the project's `go.mod` pins 1.25; the toolchain auto-upgrades to 1.25.x).
+- **Node.js** — managed via **nvm**. The repo has a `.nvmrc`; run `nvm use` from the project root.
+- **Git**.
+- **Make** (optional, for the Makefile shortcuts).
+- **Docker** (optional, only if you want to test the production image).
 
 ## Clone the Repository
 
@@ -29,177 +27,180 @@ cd openpact-app
 ```
 openpact-app/
 ├── cmd/
-│   ├── openpact/       # Main application entry point
-│   └── admin/          # Admin server entry point
+│   ├── openpact/       # Main binary — orchestrator + admin UI + engine stack
+│   ├── admin/          # Standalone admin server (dev convenience)
+│   └── mcp-server/     # Standalone stdio MCP server (optional, for external clients)
 ├── internal/
-│   ├── admin/          # Admin UI backend
-│   ├── config/         # Configuration management
-│   ├── context/        # Context file handling
-│   ├── discord/        # Discord integration
-│   ├── engine/         # AI engine adapters
-│   ├── health/         # Health check endpoints
-│   ├── logging/        # Structured logging
-│   ├── mcp/            # MCP server and tools
-│   ├── orchestrator/   # Main orchestration logic
-│   ├── ratelimit/      # Rate limiting
-│   └── starlark/       # Starlark script engine
-├── admin-ui/           # React Admin UI frontend
-├── docs/               # Documentation (Docusaurus)
-├── examples/           # Example configurations
-├── pkg/                # Public packages
-└── templates/          # Template files
+│   ├── admin/          # Admin web server (JWT auth, setup wizard, dual-handler routes)
+│   ├── chat/           # chat.Provider interface
+│   ├── config/         # Bootstrap-only YAML loader
+│   ├── context/        # SOUL/USER/MEMORY loader
+│   ├── engine/         # stackllm Stack assembly + tool-registry adapter
+│   ├── health/         # Health checks + Prometheus metrics
+│   ├── logging/        # slog wrappers
+│   ├── mcp/            # MCP tool catalogue
+│   ├── orchestrator/   # Central coordinator
+│   ├── providers/      # Discord, Slack, Telegram adapters
+│   ├── ratelimit/      # Token-bucket rate limiter
+│   ├── scheduler/      # Cron-based Starlark + agent jobs
+│   ├── starlark/       # Sandboxed scripting
+│   └── storage/        # Package-per-domain SQLite persistence
+├── admin-ui/           # Vue 3 + Naive UI admin SPA (embedded via //go:embed)
+├── docs/               # Docusaurus docs site
+├── examples/           # Example configs / scripts
+├── templates/          # Default config + context templates
+└── ai/                 # Internal specs and theme reference
 ```
 
-## Building OpenPact
+## Build & Test
 
-### Using Make
-
-The project includes a Makefile with common commands:
+### Makefile
 
 ```bash
-# Build the binary
-make build
-
-# Run tests
-make test
-
-# Run tests with coverage
-make coverage
-
-# Build Docker image
-make docker
-
-# Run locally
-make run
-
-# Format code
-make fmt
-
-# Run linter (requires golangci-lint)
-make lint
+make build      # Build the Go binary into ./openpact (CGO_ENABLED=0)
+make test       # Run all Go tests
+make coverage   # Generate HTML coverage report
+make fmt        # gofmt
+make lint       # golangci-lint (install separately if needed)
+make run        # Build and run locally
+make docker     # Build the production Docker image
 ```
 
 ### Manual Build
 
-```bash
-# Build the main binary
-go build -o openpact ./cmd/openpact
+The admin UI is embedded into the binary via `//go:embed all:dist`. Build it first:
 
-# Run the application
-./openpact start
+```bash
+cd admin-ui && npm ci && npm run build && cd ..
 ```
 
-## Running Tests
-
-Run the full test suite:
+Then build the binary:
 
 ```bash
-# Run all tests with verbose output
-go test -v ./...
+CGO_ENABLED=0 go build -o openpact ./cmd/openpact
+```
 
-# Run tests for a specific package
-go test -v ./internal/mcp/...
+### Running Tests
 
-# Run tests with race detection
+```bash
+# All tests
+go test ./...
+
+# Specific package
+go test -v ./internal/engine/...
+
+# Race detector
 go test -race ./...
 
-# Generate coverage report
+# Coverage report
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out -o coverage.html
 ```
 
-## Configuration for Development
+Some tests need the admin UI build to be present (`admin-ui/dist/`); if you skipped the UI build, the embed will fail and tests won't compile. Always build the UI at least once before running tests.
 
-Create a local configuration file:
+## Running Locally
 
-```bash
-cp .env.sample .env
-```
-
-Edit `.env` with your development credentials:
+### With everything in one binary
 
 ```bash
-# Required for Discord integration
-DISCORD_BOT_TOKEN=your_dev_bot_token
-DISCORD_CHANNEL_ID=your_test_channel
-
-# Optional integrations
-GITHUB_TOKEN=your_github_token
-GOOGLE_CLIENT_ID=your_google_client_id
-GOOGLE_CLIENT_SECRET=your_google_client_secret
+./openpact start --workspace ~/tmp/opact-dev
 ```
 
-Create a development `config.yaml`:
+The first run creates the workspace tree under `~/tmp/opact-dev/{secure,ai-data}/`. Open `http://localhost:8888` in a browser to run through the setup wizard. After signing in to a provider you can chat from the **Sessions** view.
+
+### Bootstrap config
+
+There is no need for a config file in development — defaults work. If you do want to override anything, drop a `config.yaml` at `<workspace>/secure/config.yaml`:
 
 ```yaml
-workspace_path: "./dev-workspace"
-memory_file: "./dev-memory.md"
-soul_file: "./SOUL.md"
-user_file: "./USER.md"
+workspace:
+  path: /home/you/tmp/opact-dev
 
-engine:
-  type: "opencode"
+admin:
+  bind: localhost:8888
 
-mcp:
-  enabled_tools:
-    - workspace_read
-    - workspace_write
-    - memory_read
-    - memory_write
-
-server:
-  port: 8080
-  admin_port: 8081
-
-logging:
-  level: debug
-  format: text
+starlark:
+  max_execution_ms: 30000
+  max_memory_mb: 128
 ```
+
+### Env vars (optional fallbacks)
+
+```bash
+export DISCORD_TOKEN=your_dev_bot_token   # Optional — can also be set in the UI
+export GITHUB_TOKEN=your_github_token     # Optional — for github_* tools
+```
+
+LLM provider tokens are **not** set via env vars — sign in via the admin UI's `/engine` page.
 
 ## Admin UI Development
 
-The Admin UI is a React application built with Vite:
+The admin UI is Vue 3 + Naive UI + UnoCSS, built with Vite, embedded into the Go binary via `//go:embed all:dist`.
 
 ```bash
 cd admin-ui
 
-# Install dependencies
+# Install deps (uses nvm; run `nvm use` first)
 npm install
 
-# Start development server
+# Dev server with hot reload (proxies API calls to localhost:8888)
 npm run dev
 
-# Build for production
+# Production build (output: admin-ui/dist/)
 npm run build
 ```
 
-The Admin UI development server runs on `http://localhost:5173` by default.
+The Vite dev server runs on `http://localhost:5173`. It proxies `/api/*` to `http://localhost:8888`. To use it productively:
+
+1. Start `./openpact start` (or `cmd/admin`) in one terminal — listens on `:8888`.
+2. Start `npm run dev` in another — opens `:5173` with the live UI.
+3. Edit Vue SFCs; Vite hot-reloads.
+
+:::warning YummyAdmin theme rule
+Never invent CSS values. Every height, padding, calc, and class structure must come from the theme source at `ai/theme/YummyAdmin/src/`. Read the relevant theme files before writing any new admin UI component. See `CLAUDE.md` for the full rule and rationale.
+:::
+
+## Standalone admin server (dev only)
+
+If you want the admin UI without chat providers running:
+
+```bash
+go run ./cmd/admin --workspace ~/tmp/opact-dev
+```
+
+It builds a minimal `engine.Stack` (workspace + memory tools only) so `/api/engine/*` doesn't 503. Useful for UI work, not for production.
 
 ## Docker Development
 
-Build and run with Docker:
-
 ```bash
-# Build the Docker image
+# Build the production image
+make docker
+# or:
 docker build -t openpact:dev .
 
-# Run with docker-compose
-docker-compose up -d
+# Run with the project's compose file
+docker compose up --build
 ```
 
-## Hot Reloading
-
-For development with hot reloading, you can use tools like [air](https://github.com/cosmtrek/air):
+The compose file mounts `${HOST_WORKSPACE_PATH}` from `.env` into `/workspace`. Set it before first run:
 
 ```bash
-# Install air
-go install github.com/cosmtrek/air@latest
+cp .env.sample .env
+# Edit HOST_WORKSPACE_PATH to point somewhere writable on your host.
+mkdir -p ~/.config/openpact/workspace
+```
 
-# Run with hot reload
+## Hot Reloading the Go Binary
+
+Use [air](https://github.com/cosmtrek/air):
+
+```bash
+go install github.com/cosmtrek/air@latest
 air
 ```
 
-Create an `.air.toml` configuration:
+`.air.toml`:
 
 ```toml
 root = "."
@@ -210,7 +211,26 @@ cmd = "go build -o ./tmp/openpact ./cmd/openpact"
 bin = "./tmp/openpact"
 args = ["start"]
 include_ext = ["go", "yaml"]
-exclude_dir = ["tmp", "docs", "admin-ui"]
+exclude_dir = ["tmp", "docs", "admin-ui/node_modules", "admin-ui/dist"]
+```
+
+Note: re-running `npm run build` is required to pick up admin-UI changes — air won't do that for you. For UI work, use `npm run dev` + a long-lived backend instead.
+
+## Documentation Site
+
+The Docusaurus site lives in `docs/`:
+
+```bash
+cd docs
+
+# Install deps (uses yarn)
+yarn install
+
+# Dev server
+yarn start
+
+# Production build
+yarn build
 ```
 
 ## IDE Setup
@@ -218,12 +238,15 @@ exclude_dir = ["tmp", "docs", "admin-ui"]
 ### VS Code
 
 Recommended extensions:
+
 - Go (by Google)
+- Volar (Vue 3)
 - YAML
 - Docker
 - EditorConfig
 
-Settings (`.vscode/settings.json`):
+`.vscode/settings.json`:
+
 ```json
 {
   "go.lintTool": "golangci-lint",
@@ -237,35 +260,34 @@ Settings (`.vscode/settings.json`):
 
 ### GoLand / IntelliJ IDEA
 
-- Enable "Format on Save"
-- Configure golangci-lint as external tool
-- Set Go SDK to 1.22+
+- Enable "Format on Save".
+- Configure golangci-lint as an external tool.
+- Set Go SDK to 1.25+.
 
 ## Troubleshooting
 
-### Common Issues
+### `embed: no matching files found` building the binary
 
-**Build fails with missing dependencies:**
+You skipped the admin UI build. Run:
+
 ```bash
-go mod tidy
-go mod download
+cd admin-ui && npm ci && npm run build && cd ..
 ```
 
-**Tests fail with race conditions:**
-```bash
-# Run with race detector
-go test -race ./...
-```
+### Tests fail on a fresh checkout
 
-**Docker build fails:**
-```bash
-# Clean Docker cache
-docker builder prune
-docker build --no-cache -t openpact:dev .
-```
+Same root cause as above — the `admin-ui/embed.go` `//go:embed` requires `admin-ui/dist/` to exist. Build the UI once, then tests compile cleanly.
+
+### Setup wizard reappears on every boot
+
+The wizard is gated on `setup_state.*` rows in `op_kv`. If you nuke the workspace DB, the wizard reappears. To preserve setup state across a re-init, copy `<workspace>/secure/data/stackllm.db` to your new workspace.
+
+### Provider sign-in says "no credentials"
+
+Tokens live in `<workspace>/secure/data/stackllm_auth.json` (mode `0600`). Re-sign-in via `/engine` — the file is rewritten by stackllm.
 
 ## Next Steps
 
-- Read the [Architecture](./architecture) overview
-- Review [Code Style](./code-style) guidelines
-- Check existing [issues](https://github.com/open-pact/openpact/issues)
+- Read the [Architecture](./architecture) overview.
+- Review [Code Style](./code-style) guidelines.
+- Check existing [issues](https://github.com/open-pact/openpact/issues).

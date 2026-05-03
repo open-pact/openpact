@@ -5,316 +5,249 @@ sidebar_position: 2
 
 # Architecture Overview
 
-This document describes the internal architecture of OpenPact, providing a high-level overview of the components and their interactions.
+OpenPact is a Go monorepo with a Vue 3 admin UI and a Docusaurus docs site. The runtime is a single static binary: the LLM engine, the tool registry, the orchestrator, the admin web server, and the SQLite session store all live in the same process.
 
 ## Component Diagram
 
 ```
 ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
 │   Discord    │   │   Telegram   │   │    Slack     │
-│   Client     │   │   Client     │   │   Client     │
+│   Adapter    │   │   Adapter    │   │   Adapter    │
 └──────┬───────┘   └──────┬───────┘   └──────┬───────┘
        │                  │                  │
        ▼                  ▼                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                      Chat Provider Interface                          │
-│                        (internal/chat)                                │
-│  - Unified message/command handling                                   │
-│  - Provider: Discord, Telegram, Slack                                 │
-└────────────────────────────────────┬─────────────────────────────────┘
-                                     │
-                                     ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                           Orchestrator                                │
-│                      (internal/orchestrator)                          │
-│  - Request routing                                                    │
-│  - Per-channel session management                                     │
-│  - Source context injection                                           │
-└───────────────┬────────────────────┴────────────────────┬────────────┘
-                │                                         │
-                ▼                                         ▼
-┌───────────────────────────┐           ┌────────────────────────────────┐
-│       AI Engine           │           │         MCP Server             │
-│   (internal/engine)       │           │       (internal/mcp)           │
-│  - OpenCode adapter       │◄─────────►│  - Tool registration           │
-│                           │   Tools   │  - Request handling            │
-│  - Provider abstraction   │           │  - Response formatting         │
-└───────────────────────────┘           └─────────────────┬──────────────┘
-                                                          │
-                              ┌───────────────────────────┼───────────────────────────┐
-                              │                           │                           │
-                              ▼                           ▼                           ▼
-                ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐
-                │   Workspace Tools   │   │   Integration Tools │   │   Script Engine     │
-                │                     │   │                     │   │  (internal/starlark)│
-                │  - workspace_read   │   │  - calendar_read    │   │  - Sandboxed exec   │
-                │  - workspace_write  │   │  - vault_*          │   │  - Secret injection │
-                │  - workspace_list   │   │  - github_*         │   │  - HTTP functions   │
-                │  - memory_read/write│   │  - web_fetch        │   │  - script_run       │
-                └─────────────────────┘   └─────────────────────┘   └─────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    chat.Provider interface                    │
+│                       (internal/chat)                         │
+└────────────────────────────────┬─────────────────────────────┘
+                                 ▼
+┌──────────────────────────────────────────────────────────────┐
+│                       Orchestrator                            │
+│                  (internal/orchestrator)                      │
+│  - Per-channel session map (op_channel_sessions)              │
+│  - Per-session mutex                                          │
+│  - SOUL/USER/MEMORY system-prompt injection                   │
+│  - Builds agent.Agent per turn                                │
+└────────────┬─────────────────────────────┬───────────────────┘
+             │ in-process                  │ in-process
+             ▼                             ▼
+┌────────────────────────┐    ┌──────────────────────────────┐
+│   stackllm engine      │    │       MCP tool catalogue     │
+│   (internal/engine)    │    │       (internal/mcp)         │
+│                        │    │                              │
+│  Stack:                │    │  - mcp.RegisterAllTools()    │
+│   - profile.Manager    │◄──►│  - HTTP /api/engine/* mount  │
+│   - session.SQLiteStore│    │  - Stdio MCP server (opt.)   │
+│   - tools.Registry     │    └──────────────────────────────┘
+│   - web.ManagedHandler │              ▲
+└────────────────────────┘              │ Tools registered once at boot
+                                        │ via engine.RegisterMCPTools
+                              ┌─────────┴───────────────┐
+                              ▼                         ▼
+            ┌─────────────────────────┐   ┌─────────────────────────┐
+            │     Workspace tools     │   │    Integration tools    │
+            │                         │   │                         │
+            │  - workspace_read       │   │  - calendar_read        │
+            │  - workspace_write      │   │  - vault_*              │
+            │  - workspace_list       │   │  - github_*             │
+            │  - memory_read/write    │   │  - web_fetch            │
+            │  - script_*             │   │  - discord_send         │
+            └─────────────────────────┘   └─────────────────────────┘
 ```
-
-## Core Packages
-
-### cmd/openpact
-
-The main application entry point. Handles:
-- CLI command parsing
-- Configuration loading
-- Service initialization
-- Graceful shutdown
-
-### internal/orchestrator
-
-The central coordination layer that:
-- Receives messages from all chat providers (Discord, Telegram, Slack)
-- Routes requests to the AI engine via session-based messaging
-- Manages per-channel sessions (`<WorkspacePath>/secure/data/channel_sessions.json`) -- each provider:channel pair gets its own session
-- Injects source context (`[via telegram, channel:X, user:Y]`) into messages
-- Manages conversation context (SOUL/USER/MEMORY injection)
-- Implements the `admin.SessionAPI` interface for the Admin UI
-- Coordinates MCP tool calls
-
-### internal/engine
-
-Provides adapters for different AI backends. Communicates with the [OpenCode server](https://opencode.ai/docs/server/) via REST API.
-
-```go
-// Engine interface
-type Engine interface {
-    Start(ctx context.Context) error   // Connect to opencode serve
-    Stop() error                        // No-op (process managed externally)
-    Send(ctx context.Context, sessionID string, messages []Message) (<-chan Response, error)
-    SetSystemPrompt(prompt string)
-
-    // Session management (proxied to OpenCode server)
-    CreateSession() (*Session, error)
-    ListSessions() ([]Session, error)
-    GetSession(id string) (*Session, error)
-    DeleteSession(id string) error
-    AbortSession(id string) error
-    GetMessages(sessionID string, limit int) ([]MessageInfo, error)
-}
-```
-
-The engine connects to an externally-managed `opencode serve` instance over HTTP. In Docker, the entrypoint launches OpenCode as `openpact-ai` with a restart loop; the engine is a pure HTTP client. OpenCode manages all session storage (SQLite) internally.
-
-Implementations:
-- **OpenCode**: Supports 75+ LLM providers
-
-### internal/mcp
-
-Model Context Protocol server implementation:
-
-```go
-// Tool interface
-type Tool interface {
-    Name() string
-    Description() string
-    Schema() Schema
-    Execute(ctx context.Context, params map[string]any) (any, error)
-}
-```
-
-Built-in tool categories:
-- **Workspace**: File read/write operations
-- **Memory**: Persistent memory management
-- **Chat**: Unified messaging across all providers (`chat_send`)
-- **Calendar**: Google Calendar integration
-- **Vault**: Obsidian vault access
-- **GitHub**: Issue and PR management
-- **Web**: HTTP fetching
-- **Script**: Starlark script execution
-
-### internal/starlark
-
-Sandboxed script execution engine:
-
-- **Loader**: Script discovery and parsing
-- **Sandbox**: Secure execution environment
-- **Secrets**: Secret injection and redaction
-
-Security features:
-- No filesystem access
-- HTTP-only networking
-- Execution timeouts
-- Automatic secret redaction
-
-### internal/config
-
-Configuration management:
-
-```go
-type Config struct {
-    WorkspacePath string
-    MemoryFile    string
-    SoulFile      string
-    UserFile      string
-    Engine        EngineConfig
-    MCP           MCPConfig
-    Server        ServerConfig
-    Logging       LogConfig
-}
-```
-
-Supports:
-- YAML configuration files
-- Environment variable overrides
-- Secure secret handling
-
-### internal/chat
-
-Defines the generic `chat.Provider` interface that all messaging platforms implement. Includes `MessageHandler` and `CommandHandler` callback types.
-
-### internal/providers/discord
-
-Discord bot integration (implements `chat.Provider`):
-
-- WebSocket connection management
-- Message event handling
-- Slash commands (`/new`, `/sessions`, `/switch`) for session management
-- Channel and user allowlisting
-
-### internal/providers/telegram
-
-Telegram bot integration (implements `chat.Provider`):
-
-- Long-polling update handling (no webhook needed)
-- Native `/command` support
-- 4096-character message splitting
-- User allowlisting by ID or username
-
-### internal/providers/slack
-
-Slack bot integration (implements `chat.Provider`):
-
-- Socket Mode connection (no public URL needed)
-- Events API message handling
-- Slash commands (`/openpact-new`, `/openpact-sessions`, `/openpact-switch`)
-- User and channel allowlisting
-
-### internal/admin
-
-Admin UI backend:
-
-- JWT authentication
-- Auth session management (login/logout/refresh)
-- AI session management (create/list/switch/delete/chat via WebSocket)
-- Script approval workflow
-- Secrets management API
-
-### internal/health
-
-Health check endpoints:
-
-- `/health` - Liveness check
-- `/ready` - Readiness check
-- `/metrics` - Prometheus metrics
-
-### internal/logging
-
-Structured logging:
-
-- JSON and text formats
-- Configurable log levels
-- Request ID tracking
-
-### internal/ratelimit
-
-Request rate limiting:
-
-- Token bucket algorithm
-- Per-user limits
-- Configurable thresholds
 
 ## Data Flow
 
-### Message Processing
+### Chat-platform message
 
-1. **Receive**: Chat provider (Discord, Telegram, or Slack) receives user message or command
-2. **Session**: Orchestrator gets (or creates) the per-channel session for this provider:channel pair
-3. **Context**: Load SOUL, USER, and MEMORY files as system prompt; prepend source context (`[via telegram, channel:X, user:Y]`)
-4. **Send**: `POST /session/:id/message` to the OpenCode server with the enriched message
-5. **Process**: OpenCode routes to the configured AI provider, which generates a response
-6. **Stream**: Response is streamed back through the response channel
-7. **Respond**: Send response back through the originating chat provider (or Admin UI WebSocket)
+```
+Discord/Slack/Telegram → chat.Provider → Orchestrator → engine.Stack
+                                                        ├─ profile.Manager.Default
+                                                        ├─ LoadProviderForModel
+                                                        └─ agent.New(...).Run(ctx, msgs)
+                                                            ↓
+                                                       <-chan agent.Event
+                                                            ↓
+                                              accumulateChatResponse
+                                                            ↓
+                                                Reply via chat.Provider
+```
 
-### Tool Execution
+### Admin UI chat
 
-1. **Request**: AI requests tool via MCP protocol
-2. **Validate**: Server validates tool name and parameters
-3. **Authorize**: Check tool is in allowed list
-4. **Execute**: Run tool implementation
-5. **Redact**: Scan output for secrets
-6. **Return**: Send result to AI
+```
+Browser → POST /api/engine/chat (SSE)
+                ↓
+        web.ManagedHandler (mounted under /api/engine/)
+                ↓
+        Same agent.Agent loop, in-process
+                ↓
+        SSE: event: block_delta / done / error
+```
 
-### Script Execution
+There is no HTTP hop between OpenPact and the LLM engine. The agent is a Go function call inside the same binary.
 
-1. **Load**: Script loaded from scripts directory
-2. **Parse**: Starlark parser validates syntax
-3. **Inject**: Secrets injected into environment
-4. **Execute**: Run in sandboxed interpreter
-5. **Redact**: Remove secrets from output
-6. **Return**: Return sanitized result
+## Core Packages
+
+### `cmd/openpact`
+
+The user-facing binary. `openpact start` boots the orchestrator, the engine stack, and the admin UI. There is no separate admin binary in production — `cmd/admin` exists only for dev workflows that want the UI without chat providers.
+
+### `cmd/mcp-server`
+
+A standalone stdio MCP server. Optional. Useful if you want an external MCP client (e.g. another LLM, Claude Desktop) to call OpenPact tools directly. Not used at runtime by the main binary.
+
+### `internal/orchestrator`
+
+Central coordinator. Owns the `*engine.Stack`, the per-channel session map (`op_channel_sessions`), and the per-session mutex map (`sessionLocks`). On each incoming chat message:
+
+1. Acquire the per-session mutex.
+2. Load (or create) the stackllm session by the `(provider, channel)` key.
+3. Prepend `RoleSystem` (SOUL + USER + MEMORY) on the first turn of a fresh session.
+4. Build `agent.Agent` with `agent.WithTools(stack.Tools)`.
+5. Consume `agent.Run(ctx, messages)` events; accumulate text via `accumulateChatResponse`.
+6. Emit reply on the originating chat provider; mirror it into the typing/edit semantics of that platform.
+
+`accumulateChatResponse` (with regression tests in `internal/orchestrator/accumulate_test.go`) handles the awkward case of multiple text blocks around a tool call (`"Looking that up..."` → tool_use → `"Here's what I found."`) — every block is preserved.
+
+### `internal/engine`
+
+Composes stackllm primitives into a single `Stack`:
+
+```go
+type Stack struct {
+    Manager   *profile.Manager       // Provider auth, default model, recent models
+    Sessions  session.SessionStore   // SQLite-backed; pure-Go via modernc.org/sqlite
+    Tools     *tools.Registry        // Native Go tools registered at boot
+    Handler   http.Handler           // web.ManagedHandler — mounted under /api/engine/
+    // SystemPrompt accessor pair (RWMutex-gated) used by the orchestrator
+}
+```
+
+There is no `Engine` interface. The orchestrator and admin server use `*Stack` directly: `Manager` to choose a provider, `Sessions` for persistence, `agent.New(provider, agent.WithTools(stack.Tools))` per turn, and `Handler` for the admin UI's HTTP surface.
+
+`engine.RegisterMCPTools` walks `mcp.Server.ListTools()` and registers each tool in `tools.Registry` via `mcpToolAdapter` — the adapter translates stackllm's JSON-args calling convention to MCP's `(ctx, argsMap)` shape. Schemas pass through verbatim (MCP `InputSchema` is the same JSON-Schema shape stackllm consumes).
+
+### `internal/mcp`
+
+MCP tool registry and (optional) stdio server. Tool implementations:
+
+- **Workspace** — `workspace_read`, `workspace_write`, `workspace_list`. Path-validated against `<workspace>/ai-data/`.
+- **Memory** — `memory_read`, `memory_write`. Hard-coded paths only.
+- **Communication** — `discord_send`.
+- **Integrations** — `calendar_read`, `vault_*`, `github_*`, `web_fetch`.
+- **Scripts** — `script_run`, `script_exec`, `script_list`, `script_reload`.
+
+There is no MCP HTTP/JSON-RPC server. The agent is in-process; no external transport is needed.
+
+### `internal/admin`
+
+Admin UI backend. JWT auth (HS256), short-lived access tokens, refresh-cookie rotation. The setup wizard guards onboarding (`RequireSetupMiddleware`). `Handler()` and `HandlerWithUI()` both call a shared `registerAPIRoutes(mux)` so the [dual-handler rule](#dual-handler-rule) is enforced at the function-composition level.
+
+The mounted `/api/engine/*` subtree is a `http.StripPrefix`-wrapped `web.ManagedHandler` that handles provider login, model selection, and SSE chat. It sits behind `withEngineAuth` — once setup is complete, that's just `withAuth`; during step 3 of the wizard a narrow whitelist (`isSetupEngineEndpoint`) lets the user sign in to a provider before they have a JWT.
+
+### `internal/storage/*`
+
+Package-per-domain persistence over the shared SQLite DB:
+
+- `users` — admin accounts (bcrypt).
+- `approvals` — Starlark script approval metadata.
+- `secrets` — AES-256-GCM ciphertext keyed on `data_encryption_key`.
+- `chatproviders` — Discord/Slack/Telegram enablement, allow lists, tokens.
+- `schedules` — cron schedules (script + agent).
+- `kv` — scoped scalar settings (`advanced_settings.*`, `integrations.*`, `setup_state.*`).
+- `calendars` — ordered list of iCal feeds.
+- `channels` — `(provider, channel_id) → session UUID` and detail-mode mappings.
+
+OpenPact's tables are prefixed `op_*`; stackllm's are `stackllm_*`. They share the same DB file.
+
+### `internal/starlark`
+
+Sandboxed Starlark interpreter. No filesystem access. HTTP-only via the built-in `http` module. Built-in modules: `http`, `json`, `time`, `secrets`. Secrets are injected at runtime and redacted from output before returning to the agent.
+
+### `internal/config`
+
+Bootstrap-only YAML loader. The file carries `workspace.path`, `engine.db_path`, `admin.bind`, `admin.allowlist`, `starlark.max_execution_ms`, `starlark.max_memory_mb`, and Discord defaults — nothing else. Every runtime-mutable setting lives in `op_*` tables.
+
+### `internal/context`
+
+Loads `SOUL.md`, `USER.md`, `MEMORY.md` from `<workspace>/ai-data/` for system-prompt injection.
+
+### `internal/chat`
+
+Generic `chat.Provider` interface plus `MessageHandler` and `CommandHandler` callbacks. Implemented by the Discord, Slack, and Telegram adapters.
+
+### `internal/providers/{discord,slack,telegram}`
+
+Chat-platform adapters. Discord uses websockets; Telegram uses long polling; Slack uses Socket Mode. Each implements `chat.Provider`.
+
+### `internal/health`
+
+Health endpoints: `/health` (detailed), `/healthz` (Kubernetes-style), `/ready` (readiness), `/metrics` (Prometheus). Bind address configurable via `/settings/advanced`.
+
+### `internal/logging`
+
+Structured logging via `slog`. Text or JSON format; levels: debug/info/warn/error. Configurable via `/settings/advanced`.
+
+### `internal/ratelimit`
+
+Token-bucket rate limiter. Configurable rate/burst via `/settings/advanced`.
+
+### `internal/scheduler`
+
+Cron-based job runner for Starlark scripts and agent jobs. Calls `Orchestrator.RunAgent(ctx, prompt)` for agent jobs.
 
 ## Security Architecture
 
-### Principle of Least Privilege
+### Tool Registry as the Boundary
 
-```
-┌────────────────────────────────────────────────────┐
-│                   AI Model                          │
-│  - No direct network access                         │
-│  - No filesystem access                             │
-│  - Only sees tool results                           │
-└─────────────────────────┬──────────────────────────┘
-                          │ MCP Protocol
-                          ▼
-┌────────────────────────────────────────────────────┐
-│                  OpenPact MCP                       │
-│  - Tool allowlisting                                │
-│  - Secret redaction                                 │
-│  - Rate limiting                                    │
-└─────────────────────────┬──────────────────────────┘
-                          │ Internal Calls
-                          ▼
-┌────────────────────────────────────────────────────┐
-│                 Tool Implementations                │
-│  - Sandboxed execution                              │
-│  - Scoped permissions                               │
-│  - Audit logging                                    │
-└────────────────────────────────────────────────────┘
-```
+The agent can only call tools that were registered in `tools.Registry` at boot. There is no shell, no `eval`, no arbitrary file IO. Adding a capability requires editing Go code and rebuilding.
+
+Each tool enforces its own scoping:
+
+- `workspace_*` validates paths against `<workspace>/ai-data/`.
+- `vault_*` is constrained to the configured vault path.
+- `web_fetch` is HTTP/HTTPS-only, response size capped.
+- `script_run` requires admin approval (or `admin.allowlist`).
+- Chat-send tools respect provider allow lists.
+
+### Filesystem Permissions
+
+`secure/` is mode `0700`; `secure/data/*` files are `0600`. Backup if a tool implementation has a path-traversal bug — the OS refuses the read.
 
 ### Secret Handling
 
-1. Secrets stored in `secure/data/` (AI has zero access)
-2. Never passed to AI directly
-3. Injected into scripts at runtime
-4. Automatically redacted from all outputs
+- Provider tokens → `secure/data/stackllm_auth.json` (mode `0600`), owned by stackllm.
+- Starlark secrets → `op_secrets`, AES-256-GCM at rest, decrypted in-memory only.
+- Output sanitisation: Starlark output is scanned for any literal secret value and replaced with `[REDACTED:NAME]` before reaching the agent.
 
-### Docker Security Model
+### Dual Handler Rule {#dual-handler-rule}
 
-Uses two-user privilege separation:
-- **Root user**: Initial container setup only
-- **App user**: Runtime execution with minimal privileges
+`/api/*` routes are registered in a single `registerAPIRoutes(mux)` method that both `Handler()` (admin-only mode) and `HandlerWithUI()` (production with embedded SPA) call. Adding a route to one but not the other is no longer syntactically possible.
 
 ## Extension Points
 
-### Adding New Tools
+### Adding a new tool
 
-1. Implement the `Tool` interface
-2. Register in `internal/mcp/tools.go`
-3. Add to configuration allowlist
+1. Implement the MCP tool function in `internal/mcp/<tool>.go`.
+2. Register it in `internal/mcp/register.go` (`RegisterAllTools`).
+3. Done — `engine.RegisterMCPTools` will pick it up at boot.
 
-### Adding New Engines
+### Adding a new chat provider
 
-1. Implement the `Engine` interface
-2. Add adapter in `internal/engine/`
-3. Register in engine factory
+1. Implement `chat.Provider` in `internal/providers/<name>/`.
+2. Add storage hooks in `internal/storage/chatproviders/`.
+3. Wire it into `internal/orchestrator/orchestrator.go`'s provider start/stop.
+4. Add a UI page under `admin-ui/src/views/Providers/`.
 
-### Adding Starlark Built-ins
+### Adding a Starlark built-in
 
-1. Add function in `internal/starlark/sandbox.go`
-2. Register in built-in module
-3. Document in Starlark reference
+1. Add the function in `internal/starlark/builtin_*.go`.
+2. Register it in the appropriate module.
+3. Document it in `docs/starlark/built-in-functions.md`.
+
+### Adding admin UI views
+
+1. Create the Vue SFC under `admin-ui/src/views/`.
+2. Register the route in `admin-ui/src/main.js`.
+3. Add a sidebar entry in `admin-ui/src/components/layout/SidebarMenu.vue`.
+4. Match the YummyAdmin theme verbatim — never invent CSS values. The theme source is at `ai/theme/YummyAdmin/src/`.

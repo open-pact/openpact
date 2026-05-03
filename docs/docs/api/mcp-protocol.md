@@ -1,53 +1,119 @@
 ---
 sidebar_position: 2
 title: MCP Protocol
-description: Model Context Protocol specification and tool communication
+description: How OpenPact registers tools and exposes them to the in-process LLM agent
 ---
 
 # MCP Protocol
 
-OpenPact uses the **Model Context Protocol (MCP)** to communicate between AI engines and the tool server. This page provides an overview of the protocol and how tools are registered and invoked.
+OpenPact uses the **Model Context Protocol (MCP)** as a registration model — tool definitions, schemas, and handlers — and surfaces those tools to the in-process LLM agent via [stackllm](https://github.com/stack-bound/stackllm). Because the agent runs inside the OpenPact binary, there is no network or stdio transport between OpenPact and the agent at runtime: tool calls are Go function calls.
 
-## What is MCP?
+For external clients that want to talk MCP-over-stdio (e.g. Claude Desktop, another LLM, an inspector tool), OpenPact ships a separate `mcp-server` binary alongside the main one.
 
-MCP (Model Context Protocol) is a JSON-RPC 2.0 based protocol for communication between AI models and tool servers. It defines a standard way for:
-
-- **Tool Discovery**: AI models can query available tools
-- **Tool Invocation**: AI models can call tools with structured arguments
-- **Result Handling**: Tools return structured results to the AI
-
-## Protocol Overview
+## Runtime Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        AI Engine                                 │
-│                       (OpenCode)                                 │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ JSON-RPC 2.0 over stdio
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      OpenPact MCP Server                         │
-│                        (Port 3000)                               │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────────┐ │
-│  │  Tool Router │ │ Tool Registry│ │   Request Handler        │ │
-│  └──────────────┘ └──────────────┘ └──────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Tool Implementations                        │
-│  workspace_read, memory_write, script_run, chat_send, etc.      │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     OpenPact process                         │
+│  ┌───────────────────────────┐                              │
+│  │   stackllm agent.Agent    │                              │
+│  │   (in-process)            │                              │
+│  └─────────────┬─────────────┘                              │
+│                │ Go function call                            │
+│                ▼                                             │
+│  ┌───────────────────────────┐                              │
+│  │  stackllm tools.Registry   │  ← registered at boot       │
+│  │  (with mcpToolAdapter)     │     by engine.Register-     │
+│  └─────────────┬─────────────┘     MCPTools                 │
+│                │                                             │
+│                ▼                                             │
+│  ┌───────────────────────────┐                              │
+│  │   internal/mcp tool funcs  │                              │
+│  │   workspace_*, script_*,   │                              │
+│  │   memory_*, web_fetch, ... │                              │
+│  └───────────────────────────┘                              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## JSON-RPC 2.0 Format
+`engine.RegisterMCPTools` walks `mcp.Server.ListTools()` at boot and registers each one in `tools.Registry` via an adapter (`mcpToolAdapter.Call`) that forwards stackllm's JSON-args calling convention to MCP's `(ctx, argsMap)` shape. The MCP `InputSchema` (a JSON-Schema map) passes through verbatim — stackllm consumes the same shape.
 
-All MCP communication follows the JSON-RPC 2.0 specification.
+## Tool definition
 
-### Request Format
+Tools are defined in Go code in `internal/mcp/`. Each tool provides:
+
+```go
+type Tool struct {
+    Name        string         `json:"name"`
+    Description string         `json:"description"`
+    InputSchema InputSchema    `json:"inputSchema"` // JSON Schema
+    Handler     ToolHandler    // func(ctx, argsMap) (any, error)
+}
+
+type InputSchema struct {
+    Type       string              `json:"type"` // "object"
+    Properties map[string]Property `json:"properties"`
+    Required   []string            `json:"required,omitempty"`
+}
+
+type Property struct {
+    Type        string `json:"type"`
+    Description string `json:"description"`
+}
+```
+
+Tools are registered in `internal/mcp/register.go` via `RegisterAllTools(srv, cfg)`. The registry is closed once `engine.RegisterMCPTools` has copied the catalogue into stackllm; runtime additions are not supported.
+
+## Built-in Tools
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Workspace** | `workspace_read`, `workspace_write`, `workspace_list` | Files under `ai-data/` |
+| **Memory** | `memory_read`, `memory_write` | SOUL/USER/MEMORY + daily files |
+| **Vault** | `vault_read`, `vault_write`, `vault_list`, `vault_search` | Obsidian vault (configured at `/integrations`) |
+| **Chat** | `chat_send` | Proactive message via Discord/Telegram/Slack |
+| **Models** | `model_list`, `model_set_default` | View/change the default model |
+| **Calendar** | `calendar_read` | iCal feeds (configured at `/integrations`) |
+| **GitHub** | `github_list_issues`, `github_create_issue` | Issue management |
+| **Web** | `web_fetch` | HTTP/HTTPS GET, response capped |
+| **Scripts** | `script_list`, `script_run`, `script_exec`, `script_reload` | Starlark execution |
+| **Schedules** | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_enable`, `schedule_disable` | Cron job management |
+
+See [MCP Tools Reference](/docs/features/mcp-tools) for full per-tool schemas.
+
+## Script approval integration
+
+When `script_run` or `script_exec` is invoked, the script tool checks approval status before executing:
+
+```
+Tool call: script_run / script_exec
+        ↓
+   Is script in admin.allowlist?
+        │
+       YES → Execute directly
+        │
+       NO  → Check op_approvals
+                  │
+            APPROVED → Execute (sandboxed)
+                  │
+            NOT APPROVED → Return error to agent
+```
+
+The "not approved" response is a normal tool result with an error message, so the agent can react gracefully:
+
+```text
+Error: Script 'new_feature.star' is pending approval. An administrator must
+review and approve this script before it can be executed.
+```
+
+Approval is granted by an admin via the admin UI (`/scripts/<name>/approve`).
+
+## External MCP clients
+
+OpenPact ships a standalone stdio MCP server at `/app/mcp-server` (in the Docker image) or `./mcp-server` (in source builds). This one **does** speak JSON-RPC 2.0 over stdio, so external clients can call OpenPact tools directly.
+
+### Wire format (stdio JSON-RPC 2.0)
+
+#### Request
 
 ```json
 {
@@ -56,21 +122,12 @@ All MCP communication follows the JSON-RPC 2.0 specification.
   "method": "tools/call",
   "params": {
     "name": "workspace_read",
-    "arguments": {
-      "path": "/workspace/notes.md"
-    }
+    "arguments": { "path": "notes/todo.md" }
   }
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `jsonrpc` | string | Always `"2.0"` |
-| `id` | number/string | Request identifier for response matching |
-| `method` | string | MCP method being called |
-| `params` | object | Method-specific parameters |
-
-### Response Format (Success)
+#### Response (success)
 
 ```json
 {
@@ -78,43 +135,35 @@ All MCP communication follows the JSON-RPC 2.0 specification.
   "id": 1,
   "result": {
     "content": [
-      {
-        "type": "text",
-        "text": "File contents here..."
-      }
+      { "type": "text", "text": "File contents here..." }
     ]
   }
 }
 ```
 
-### Response Format (Error)
+#### Response (error)
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "error": {
-    "code": -32602,
-    "message": "Invalid params: file not found"
-  }
+  "error": { "code": -32602, "message": "Invalid params: file not found" }
 }
 ```
 
-| Error Code | Meaning |
-|------------|---------|
+#### Standard JSON-RPC error codes
+
+| Code | Meaning |
+|------|---------|
 | `-32700` | Parse error |
 | `-32600` | Invalid request |
 | `-32601` | Method not found |
 | `-32602` | Invalid params |
 | `-32603` | Internal error |
 
-## MCP Methods
+### MCP methods
 
-### tools/list
-
-Lists all available tools with their schemas.
-
-**Request:**
+#### `tools/list`
 
 ```json
 {
@@ -123,8 +172,6 @@ Lists all available tools with their schemas.
   "method": "tools/list"
 }
 ```
-
-**Response:**
 
 ```json
 {
@@ -138,64 +185,23 @@ Lists all available tools with their schemas.
         "inputSchema": {
           "type": "object",
           "properties": {
-            "path": {
-              "type": "string",
-              "description": "Path to the file relative to workspace root"
-            }
+            "path": { "type": "string", "description": "Relative path within ai-data/" }
           },
           "required": ["path"]
         }
-      },
-      {
-        "name": "script_run",
-        "description": "Execute a Starlark script",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string",
-              "description": "Name of the script (without .star extension)"
-            },
-            "function": {
-              "type": "string",
-              "description": "Optional function name to call"
-            },
-            "args": {
-              "type": "array",
-              "description": "Optional arguments to pass to the function"
-            }
-          },
-          "required": ["name"]
-        }
       }
     ]
   }
 }
 ```
 
-### tools/call
+#### `tools/call`
 
-Invokes a specific tool with arguments.
+See the Request/Response examples above.
 
-**Request:**
+### Tool errors
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "script_run",
-    "arguments": {
-      "name": "weather",
-      "function": "get_weather",
-      "args": ["London"]
-    }
-  }
-}
-```
-
-**Response:**
+A tool that fails returns a normal `result` with `isError: true`:
 
 ```json
 {
@@ -203,272 +209,99 @@ Invokes a specific tool with arguments.
   "id": 2,
   "result": {
     "content": [
-      {
-        "type": "text",
-        "text": "{\"city\": \"London\", \"temp_c\": 15.5, \"condition\": \"Cloudy\"}"
-      }
-    ],
-    "isError": false
-  }
-}
-```
-
-### Error Response Example
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "Error: script 'unknown' not found"
-      }
+      { "type": "text", "text": "Error: script 'unknown' not found" }
     ],
     "isError": true
   }
 }
 ```
 
-## Tool Registration
+### Wiring an external client
 
-Tools are registered with the MCP server during initialization. Each tool provides:
-
-1. **Name**: Unique identifier for the tool
-2. **Description**: Human-readable description
-3. **Input Schema**: JSON Schema defining valid arguments
-4. **Handler**: Function that executes the tool
-
-### Tool Definition Structure
-
-```go
-type Tool struct {
-    Name        string      `json:"name"`
-    Description string      `json:"description"`
-    InputSchema InputSchema `json:"inputSchema"`
-}
-
-type InputSchema struct {
-    Type       string              `json:"type"`
-    Properties map[string]Property `json:"properties"`
-    Required   []string            `json:"required,omitempty"`
-}
-
-type Property struct {
-    Type        string `json:"type"`
-    Description string `json:"description"`
-}
-```
-
-### Built-in Tools
-
-OpenPact registers the following tools:
-
-| Category | Tool | Description |
-|----------|------|-------------|
-| **Workspace** | `workspace_read` | Read files from workspace |
-| | `workspace_write` | Write files to workspace |
-| | `workspace_list` | List files in workspace |
-| **Memory** | `memory_read` | Read memory files |
-| | `memory_write` | Write to memory |
-| **Vault** | `vault_read` | Read Obsidian notes |
-| | `vault_write` | Write Obsidian notes |
-| | `vault_list` | List vault files |
-| | `vault_search` | Search vault content |
-| **Chat** | `chat_send` | Send messages via any chat provider |
-| **Calendar** | `calendar_read` | Read calendar events |
-| **GitHub** | `github_list_issues` | List repository issues |
-| | `github_create_issue` | Create new issues |
-| **Web** | `web_fetch` | Fetch web pages |
-| **Scripts** | `script_list` | List available scripts |
-| | `script_run` | Run a named script |
-| | `script_exec` | Execute arbitrary Starlark |
-| | `script_reload` | Reload scripts from disk |
-
-## Script Approval Integration
-
-When `script_run` or `script_exec` is called, the MCP server checks approval status:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     MCP Server receives                          │
-│                     tools/call: script_run                       │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │ Is script in    │
-                    │ config allowlist?│
-                    └─────────────────┘
-                        │         │
-                       YES       NO
-                        │         │
-                        ▼         ▼
-                   ┌────────┐  ┌──────────────────┐
-                   │Execute │  │Check approval    │
-                   │directly│  │status from Admin │
-                   └────────┘  │API               │
-                               └──────────────────┘
-                                   │          │
-                              APPROVED    NOT APPROVED
-                                   │          │
-                                   ▼          ▼
-                              ┌────────┐  ┌────────────┐
-                              │Execute │  │Return error│
-                              │script  │  │message     │
-                              └────────┘  └────────────┘
-```
-
-### Unapproved Script Response
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "Error: Script 'new_feature.star' is pending approval. An administrator must review and approve this script before it can be executed."
-      }
-    ],
-    "isError": true
-  }
-}
-```
-
-## Connection Modes
-
-### stdio Mode (Default)
-
-The MCP server communicates over standard input/output. This is the default mode used by OpenCode.
-
-```yaml
-# OpenCode MCP config
-mcp:
-  servers:
-    openpact:
-      command: "./openpact"
-      args: ["--mcp"]
-```
-
-### HTTP Mode (Future)
-
-HTTP-based transport for remote MCP servers (planned for future releases).
-
-## Rate Limiting
-
-MCP requests are subject to rate limiting to prevent abuse:
-
-| Limit Type | Default | Description |
-|------------|---------|-------------|
-| Requests/second | 10 | Maximum sustained request rate |
-| Burst | 20 | Maximum burst size |
-
-Rate limit exceeded response:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 4,
-  "error": {
-    "code": -32000,
-    "message": "Rate limit exceeded. Please try again later."
-  }
-}
-```
-
-## Security Considerations
-
-### Tool Access Control
-
-- Tools only expose explicitly configured capabilities
-- Workspace tools are restricted to configured paths
-- Scripts must be approved before execution
-- Secrets are never exposed in tool responses
-
-### Secret Redaction
-
-All tool responses are scanned for secret values. If a secret value appears in the output, it is replaced:
-
-```json
-{
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "API response: {\"key\": \"[REDACTED:API_KEY]\"}"
-      }
-    ]
-  }
-}
-```
-
-### Path Traversal Prevention
-
-Workspace and vault tools validate paths to prevent directory traversal:
-
-```
-✓ Allowed: /workspace/notes.md
-✓ Allowed: /workspace/subdir/file.txt
-✗ Blocked: /workspace/../etc/passwd
-✗ Blocked: /etc/passwd
-```
-
-## Debugging MCP Communication
-
-### Enable Debug Logging
-
-```yaml
-logging:
-  level: debug
-```
-
-### Example Debug Output
-
-```
-DEBUG mcp: received request method=tools/list id=1
-DEBUG mcp: sending response id=1 tools=16
-DEBUG mcp: received request method=tools/call id=2 tool=workspace_read
-DEBUG mcp: tool execution completed id=2 duration=5ms success=true
-```
-
-### Testing with curl (HTTP mode)
-
-When HTTP mode is enabled (future):
+The external client launches the stdio binary directly:
 
 ```bash
-# List tools
-curl -X POST http://localhost:3000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-
-# Call a tool
-curl -X POST http://localhost:3000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc":"2.0",
-    "id":2,
-    "method":"tools/call",
-    "params":{
-      "name":"workspace_read",
-      "arguments":{"path":"/workspace/test.md"}
-    }
-  }'
+# OPENPACT_WORKSPACE_PATH points at the workspace whose tools you want to use.
+# OPENPACT_FEATURES is an optional comma-separated allowlist (default: all).
+OPENPACT_WORKSPACE_PATH=/workspace \
+OPENPACT_FEATURES=scripts,workspace,memory \
+/app/mcp-server
 ```
+
+The stdio server uses the same `internal/mcp/` package as the in-process registry, so the tool surface is identical (modulo features that need orchestrator state — chat, models, schedules).
+
+## Security considerations
+
+### Tool surface is closed
+
+The agent (in-process) and any external stdio client can only call tools that were registered at boot. There is no runtime path to add a tool — that requires a binary rebuild.
+
+### Path validation
+
+Workspace and vault tools validate every path:
+
+```
+✓ Allowed: ai-data/notes.md
+✓ Allowed: ai-data/sub/file.txt
+✗ Blocked: ../../../etc/passwd
+✗ Blocked: /etc/passwd
+✗ Blocked: secure/config.yaml   (outside ai-data/)
+```
+
+### Secret redaction
+
+Starlark scripts have access to secrets via `secrets.get("KEY")`, but output is scanned and replaced before reaching the agent:
+
+```json
+{
+  "content": [
+    { "type": "text", "text": "API response: {\"key\": \"[REDACTED:API_KEY]\"}" }
+  ]
+}
+```
+
+The agent (and any tool consuming the result) sees `[REDACTED:API_KEY]`, never the raw value.
+
+## Rate limiting
+
+The token-bucket rate limiter applies to inbound HTTP requests on the public surfaces (`/api/*`); it doesn't apply to in-process tool calls. The standalone stdio MCP server has no rate limiter — it's intended for trusted local use.
+
+## Debugging
+
+### Logging
+
+```sh
+# /settings/advanced → logging level → debug
+```
+
+Example debug output:
+
+```
+DEBUG engine: registered 21 tools from MCP catalogue
+DEBUG agent: tool_call name=workspace_read args={"path":"notes/todo.md"}
+DEBUG agent: tool_result name=workspace_read duration=5ms success=true
+```
+
+### Inspecting registered tools
+
+The mcp-server `--list-tools` flag prints the registered set in JSON:
+
+```bash
+/app/mcp-server --list-tools
+```
+
+Or grep `internal/mcp/register.go` in source.
 
 ## Protocol Extensions
 
-OpenPact extends the base MCP specification with:
+Beyond base MCP/JSON-RPC, OpenPact contributes:
 
-1. **Script approval status** in error responses
-2. **Secret redaction** in all responses
-3. **Rate limiting** with informative error codes
-4. **Execution metrics** available via `/metrics` endpoint
+1. **Script approval status** — `script_run` returns a structured "pending approval" error.
+2. **Secret redaction** — applied to every tool result before returning.
+3. **In-process invocation** — at runtime there is no JSON-RPC overhead; the agent calls the tool function directly via the stackllm adapter.
 
 ## Related Documentation
 
-- [MCP Tools Reference](/docs/features/mcp-tools) - Detailed documentation for each tool
-- [Script Sandboxing](/docs/security/script-sandboxing) - Script execution security
-- [Secret Handling](/docs/security/secret-handling) - How secrets are protected
+- [MCP Tools Reference](/docs/features/mcp-tools) — detailed per-tool schemas.
+- [Script Sandboxing](/docs/security/script-sandboxing) — Starlark execution security.
+- [Secret Handling](/docs/security/secret-handling) — how secrets are protected.

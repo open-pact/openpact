@@ -18,11 +18,11 @@ The workspace provides:
 
 ## Configuration
 
-Configure the workspace path in `openpact.yaml`:
+The workspace root is set via the `WORKSPACE_PATH` env var (default `/workspace` in the Docker image, `./workspace` for native binaries). You can also override it from `secure/config.yaml`:
 
 ```yaml
 workspace:
-  path: ./workspace  # default; use /workspace in Docker
+  path: /workspace
 ```
 
 When using Docker, mount a volume to persist files:
@@ -30,7 +30,7 @@ When using Docker, mount a volume to persist files:
 ```bash
 docker run -d \
   -v openpact-workspace:/workspace \
-  -e DISCORD_TOKEN=your_token \
+  -p 8888:8888 \
   ghcr.io/open-pact/openpact:latest
 ```
 
@@ -40,12 +40,16 @@ Or with Docker Compose:
 services:
   openpact:
     image: ghcr.io/open-pact/openpact:latest
+    ports:
+      - "8888:8888"
     volumes:
       - openpact-workspace:/workspace
 
 volumes:
   openpact-workspace:
 ```
+
+`EnsureDirs` creates the workspace tree on first boot with the right permissions (`secure/` and `secure/data/` at `0700`; `ai-data/` and children at `0755`).
 
 ## Workspace Tools
 
@@ -132,7 +136,7 @@ Allowed:
 
 Blocked:
   secure/config.yaml               ✗  (system-only)
-  secure/data/secrets.json         ✗  (system-only)
+  secure/data/stackllm.db          ✗  (system-only)
   /etc/passwd                      ✗
   ../../../etc/shadow              ✗
   /home/user/.ssh/id_rsa           ✗
@@ -171,29 +175,27 @@ A typical workspace organization:
 
 ```
 workspace/
-├── secure/                     # SYSTEM-ONLY — AI has ZERO access
-│   ├── config.yaml             # OpenPact configuration
-│   └── data/                   # Secrets, JWT key, approvals, etc.
-│       ├── jwt_secret
-│       ├── users.json
-│       ├── approvals.json
-│       ├── secrets.json
-│       └── opencode/
-├── ai-data/                    # AI-ACCESSIBLE — MCP tools scope here
-│   ├── SOUL.md                 # AI identity and personality
-│   ├── USER.md                 # User preferences
-│   ├── MEMORY.md               # Persistent memory
-│   ├── memory/                 # Daily memory files
+├── secure/                          # SYSTEM-ONLY (mode 0700) — AI has ZERO access
+│   ├── config.yaml                  # Bootstrap-only YAML
+│   └── data/                        # System data (mode 0700)
+│       ├── jwt_secret               # JWT signing key (0600)
+│       ├── data_encryption_key      # AES-256 key for op_secrets (0600)
+│       ├── stackllm_auth.json       # LLM provider tokens (0600)
+│       ├── stackllm_config.json     # Default model + recent models
+│       └── stackllm.db              # Shared SQLite — op_* and stackllm_* tables (0600)
+├── ai-data/                         # AI-ACCESSIBLE (mode 0755)
+│   ├── SOUL.md                      # AI identity and personality
+│   ├── USER.md                      # User preferences
+│   ├── MEMORY.md                    # Persistent memory
+│   ├── memory/                      # Daily memory files
 │   │   ├── 2024-01-15.md
 │   │   └── 2024-01-16.md
-│   ├── scripts/                # Starlark scripts
+│   ├── scripts/                     # Starlark scripts
 │   │   ├── weather.star
 │   │   └── stocks.star
-│   ├── skills/                 # Skill definitions
-│   ├── notes/                  # General notes
-│   │   ├── todo.md
-│   │   └── projects/
-│   └── downloads/              # Downloaded content
+│   ├── skills/                      # Skill definitions
+│   ├── notes/                       # General notes (created by tools/users)
+│   └── downloads/                   # Downloaded content
 ```
 
 ## Use Cases

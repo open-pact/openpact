@@ -9,7 +9,7 @@ sidebar_position: 1
 OpenPact is in early beta and is open for testing. APIs, configuration, and features are subject to change as the project evolves. We welcome feedback at [hello@openpact.ai](mailto:hello@openpact.ai).
 :::
 
-OpenPact is a secure, minimal framework for running your own AI assistant. Built in Go and designed with security as the top priority, it gives you complete control over what your AI can access while keeping your data private.
+OpenPact is a secure, minimal framework for running your own AI assistant. It ships as a single static Go binary with an embedded Vue admin UI and an in-process LLM engine. You configure providers, sign in, and pick a model from the web UI — there is no separate AI service to install or supervise.
 
 
 <div style={{textAlign: 'center', margin: '2rem 0'}}>
@@ -25,79 +25,82 @@ OpenPact is a secure, minimal framework for running your own AI assistant. Built
 
 ## What is OpenPact?
 
-OpenPact is an **AI orchestration framework** that connects your preferred AI model to various services and capabilities through a secure, sandboxed environment. It acts as a secure bridge between:
+OpenPact is an **AI orchestration framework** that connects your preferred AI model to various services and capabilities through a secure, sandboxed environment. It acts as a bridge between:
 
-- **AI Models** (Claude, GPT, Gemini, and 75+ providers via OpenCode)
-- **Communication Channels** (Discord, Telegram, Slack)
-- **Your Data** (files, notes, calendars, GitHub issues)
-- **Custom Scripts** (safely sandboxed Starlark)
+- **AI Providers** — OpenAI, GitHub Copilot, Google Gemini, and Ollama via the in-process [stackllm](https://github.com/stack-bound/stackllm) engine
+- **Communication Channels** — Discord, Telegram, Slack
+- **Your Data** — files, notes, calendars, GitHub issues
+- **Custom Scripts** — sandboxed Starlark
 
-Think of OpenPact as your personal AI infrastructure - you control the AI, the tools it can use, and where your data goes.
+You control the AI, the tools it can use, and where your data goes.
 
 ## Why OpenPact?
 
 ### Security First
 
-OpenPact implements the **principle of least privilege**. Your AI assistant can only use the tools you explicitly enable, and secrets never leak to the AI model.
+OpenPact implements the **principle of least privilege**. The agent can only call tools that have been explicitly registered, and Starlark secrets are redacted before any output reaches the model.
 
 ```
-AI Model <---> OpenPact <---> Your Services
-              (sandbox)
+AI Provider <---> stackllm (in-process) <---> OpenPact tool registry <---> Your services
+                                                  (sandboxed)
 ```
 
-- **Tool Allowlisting**: Only explicitly configured MCP tools are available
-- **Secret Redaction**: API keys and tokens are automatically hidden from the AI
-- **Two-User Docker Model**: Container runs with separated privileges
-- **No Arbitrary Code Execution**: AI cannot run arbitrary commands
+- **Tool allowlisting** — only explicitly registered MCP tools are exposed to the agent.
+- **Secret redaction** — API keys and tokens injected into Starlark scripts are scrubbed from output before the model sees them.
+- **Workspace boundary** — workspace tools are scoped to `ai-data/`; `secure/` (config, JWT key, encryption key, SQLite DB) is unreachable.
+- **JWT-protected admin API** — all `/api/*` endpoints require a valid token after the setup wizard finishes.
 
-### 75+ AI Providers
+### Multi-provider, web-driven
 
-OpenPact is powered by [OpenCode](https://opencode.ai), giving you access to a wide range of LLM providers:
+Sign in to providers from the admin UI without ever editing config or environment variables:
 
-- **Anthropic** (Claude), **OpenAI** (GPT), **Google** (Gemini), **Ollama**, and many more
+| Provider | Sign-in flow |
+|----------|--------------|
+| OpenAI | API key, or "Sign in with ChatGPT" (Codex device flow) |
+| GitHub Copilot | GitHub device flow |
+| Google Gemini | API key |
+| Ollama | local base URL |
 
-Switch between models and providers without changing your configuration or losing your setup.
+Switch the default model at any time from `/engine`. Tokens are stored under `<workspace>/secure/data/` (file mode `0600`) and never appear in `config.yaml`.
 
 ### Sandboxed Scripting
 
-Extend OpenPact's capabilities with **Starlark scripts** - a Python-like language that runs in a secure sandbox:
+Extend OpenPact with **Starlark scripts** — a Python-like language that runs in a secure sandbox:
 
-- **No Filesystem Access**: Scripts cannot read or write files
-- **HTTP Only**: Network access limited to HTTP/HTTPS
-- **Execution Limits**: Configurable timeouts prevent runaway scripts
-- **Automatic Secret Redaction**: Even script output is scanned for leaked secrets
+- **No filesystem access** — scripts cannot read or write files.
+- **HTTP only** — `http://` and `https://` URLs only.
+- **Execution limits** — configurable timeout and response-size cap.
+- **Automatic secret redaction** — output is scanned for leaked secret values.
 
 ### Production Ready
 
-OpenPact is built for real-world deployment:
-
-- **Docker Native**: Easy deployment with official container images
-- **Health Checks**: Built-in endpoints for monitoring (`/health`, `/ready`, `/metrics`)
-- **Prometheus Metrics**: Export metrics for your monitoring stack
-- **Structured Logging**: JSON logging for log aggregation
-- **Rate Limiting**: Built-in request rate limiting
+- **Single static binary** — pure-Go (CGO-free) build via `modernc.org/sqlite`. ~22 MB.
+- **Health checks** — `/health`, `/healthz`, `/ready`.
+- **Prometheus metrics** — `/metrics`.
+- **Structured logging** — text or JSON.
+- **Rate limiting** — token-bucket on the public surfaces.
 
 ## Key Concepts
 
 ### MCP Tools
 
-OpenPact uses the **Model Context Protocol (MCP)** to expose capabilities to AI models. Each tool has a specific purpose and clear boundaries:
+OpenPact uses the **Model Context Protocol** as a tool-registration model. Each registered tool has a specific purpose and clear boundaries; at runtime they are invoked in-process by the stackllm agent.
 
 | Category | Tools |
 |----------|-------|
 | Workspace | `workspace_read`, `workspace_write`, `workspace_list` |
 | Memory | `memory_read`, `memory_write` |
-| Communication | `chat_send` |
+| Communication | `discord_send` |
 | Integrations | `calendar_read`, `vault_*`, `github_*`, `web_fetch` |
 | Scripting | `script_run`, `script_exec`, `script_list`, `script_reload` |
 
 ### Context Files
 
-OpenPact uses special markdown files to shape AI behavior:
+OpenPact loads three markdown files from `ai-data/` into the system prompt on the first turn of each session:
 
-- **SOUL.md**: Defines the AI's identity and personality
-- **USER.md**: Contains user preferences and context
-- **MEMORY.md**: Persistent memory that the AI can read and update
+- **SOUL.md** — defines the AI's identity and personality.
+- **USER.md** — user preferences and context.
+- **MEMORY.md** — persistent memory the AI can update via the `memory_*` tools.
 
 ### Starlark Scripts
 
@@ -114,10 +117,10 @@ The AI sees results but never the actual API key values.
 
 ## Quick Links
 
-- **[Quick Start](./getting-started/quick-start)** - Get running in 5 minutes
-- **[Installation](./getting-started/installation)** - Detailed setup options
-- **[Configuration](./configuration/overview)** - Configure OpenPact for your needs
-- **[MCP Tools Reference](./features/mcp-tools)** - All available tools
+- **[Quick Start](./getting-started/quick-start)** — get running in 5 minutes
+- **[Installation](./getting-started/installation)** — detailed setup options
+- **[Configuration](./configuration/overview)** — configure OpenPact for your needs
+- **[MCP Tools Reference](./features/mcp-tools)** — all available tools
 
 ## Community
 

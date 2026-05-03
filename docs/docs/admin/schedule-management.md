@@ -140,7 +140,7 @@ The **Last Run** column shows the result of the most recent execution:
 - **Success** (green tag) — Job completed without errors
 - **Error** (red tag) — Job failed; hover or check the API for the error message
 
-For detailed output (up to 2000 characters), use the [Admin API](/docs/api/admin-api#get-apischedules-1) to fetch the full schedule object, which includes `last_run_output` and `last_run_error`.
+For detailed output (up to 2000 characters), use the [Admin API](/docs/api/admin-api#get--put--delete-apischedules) to fetch the full schedule object, which includes `last_run_output` and `last_run_error`.
 
 ## Output Delivery
 

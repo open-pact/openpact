@@ -5,82 +5,79 @@ sidebar_position: 1
 
 # MCP Tools Reference
 
-OpenPact exposes capabilities to AI models through MCP (Model Context Protocol) tools. This page documents all built-in tools.
+OpenPact exposes capabilities to its in-process LLM agent through tools registered using the **Model Context Protocol (MCP)** as a registration model. The agent runs inside the OpenPact binary (via [stackllm](https://github.com/stack-bound/stackllm)), so tool calls are Go function calls — there is no inter-process JSON-RPC at runtime.
 
-## What is MCP?
+This page documents all built-in tools.
 
-The **Model Context Protocol (MCP)** is a standard for connecting AI models to external tools and data sources. It provides:
+## How tools are registered
 
-- **Standardized Interface**: Common format for tool definitions and invocations
-- **Security Boundaries**: Clear separation between AI and system capabilities
-- **Extensibility**: Easy addition of new tools without changing the core system
+Tools are registered **once at boot**. `mcp.RegisterAllTools` walks the configured tool catalogue, and `engine.RegisterMCPTools` copies each one into stackllm's native `tools.Registry` via `mcpToolAdapter.Call`. The adapter translates stackllm's JSON-args calling convention to MCP's `(ctx, argsMap)` shape; schemas pass through verbatim.
 
-OpenPact implements MCP to give AI models controlled access to:
-- File systems (workspace, vault)
-- Communication channels (Discord, Telegram, Slack)
-- External services (GitHub, calendars, web)
-- Custom scripts (Starlark)
+Every tool is conditional on the configuration that makes it usable:
 
-## Security Model
+| Tool group | Always registered? | Condition |
+|------------|-------------------|-----------|
+| Workspace, memory | Yes | — |
+| Web (`web_fetch`) | Yes | — |
+| Calendar | Conditional | At least one calendar feed configured (`/integrations`). |
+| Vault | Conditional | Vault path configured (`/integrations`). |
+| GitHub | Conditional | `GITHUB_TOKEN` set in `op_secrets` or env. |
+| Script tools | Yes | Script registry initialized (default). |
+| Chat (`chat_send`) | Conditional | At least one chat provider enabled. |
+| Model (`model_list`, `model_set_default`) | Conditional | Provider lookup wired (production main binary; not the standalone MCP server). |
+| Schedule | Conditional | Scheduler wired (production main binary). |
 
-All MCP tools in OpenPact follow the principle of least privilege:
+## Security model
 
-1. **Explicit Enablement**: Tools must be configured to be available
-2. **Scoped Access**: Tools can only access designated resources
-3. **Secret Protection**: API keys and tokens are never exposed to the AI
-4. **Audit Trail**: All tool invocations are logged
+All MCP tools follow the principle of least privilege:
+
+1. **Static surface** — the registry is closed after boot; new capabilities require a binary rebuild.
+2. **Scoped access** — workspace/vault paths are validated; `web_fetch` is HTTPS-capped; chat-send respects allow lists.
+3. **Secret protection** — provider tokens, JWT keys, and Starlark secrets never appear in tool inputs/outputs.
+4. **Audit trail** — invocations are logged via the standard structured logger.
 
 ```
-AI Model (cannot see secrets)
-     │
-     ▼
-┌─────────────────────┐
-│   MCP Tool Layer    │ ← Tools defined here
-│   (OpenPact)        │
-└─────────────────────┘
-     │
-     ▼
-External Services (secrets injected here)
+LLM agent (in-process; cannot see secrets)
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│   stackllm tools.Registry               │  ← static set, populated at boot
+│                                         │
+│   mcpToolAdapter → mcp.ToolHandler      │
+└─────────────────────────────────────────┘
+        │
+        ▼
+External services (provider-specific auth handled inside the tool)
 ```
 
-## Built-in Tools
+## Built-in tools
 
-### Workspace Tools
+### Workspace tools
 
-Tools for managing files in the `ai-data/` subdirectory within the workspace. All workspace tools are scoped to `ai-data/` -- the AI cannot access files in `secure/`.
+Tools for managing files in `<workspace>/ai-data/`. All workspace tools are scoped to that root — `secure/` is unreachable.
 
 #### workspace_read
-
-Read a file from the workspace.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | Yes | Relative path within `ai-data/` |
 
-**Example:**
 ```json
 {
   "name": "workspace_read",
-  "arguments": {
-    "path": "notes/todo.md"
-  }
+  "arguments": { "path": "notes/todo.md" }
 }
 ```
 
-**Returns:** File contents as string, or error if file doesn't exist.
-
----
+Returns: file contents as a string, or an error if the file doesn't exist.
 
 #### workspace_write
-
-Write content to a file in the `ai-data/` directory.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | Yes | Relative path within `ai-data/` |
 | `content` | string | Yes | Content to write |
 
-**Example:**
 ```json
 {
   "name": "workspace_write",
@@ -91,67 +88,43 @@ Write content to a file in the `ai-data/` directory.
 }
 ```
 
-**Returns:** Success confirmation or error.
-
----
+Returns: success confirmation, or an error.
 
 #### workspace_list
 
-List files in the `ai-data/` directory.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | No | Relative path within `ai-data/` (defaults to `ai-data/` root) |
+| `path` | string | No | Relative path within `ai-data/` (defaults to root) |
 
-**Example:**
 ```json
 {
   "name": "workspace_list",
-  "arguments": {
-    "path": "notes"
-  }
+  "arguments": { "path": "notes" }
 }
 ```
 
-**Returns:** List of files and directories.
+Returns: list of files and directories.
 
----
-
-### Memory Tools
-
-Tools for reading and writing persistent memory.
+### Memory tools
 
 #### memory_read
 
-Read from a memory file.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file` | string | No | Memory file name (defaults to MEMORY.md) |
+| `file` | string | No | Memory file (default `MEMORY.md`) |
 
-**Example:**
 ```json
-{
-  "name": "memory_read",
-  "arguments": {}
-}
+{ "name": "memory_read", "arguments": {} }
 ```
 
-**Returns:** Memory file contents.
-
----
-
 #### memory_write
-
-Write to a memory file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `content` | string | Yes | Content to write |
-| `file` | string | No | Memory file name (defaults to MEMORY.md) |
-| `append` | boolean | No | Append instead of replace (default: false) |
+| `file` | string | No | Memory file (default `MEMORY.md`) |
+| `append` | boolean | No | Append rather than replace (default false) |
 
-**Example:**
 ```json
 {
   "name": "memory_write",
@@ -162,483 +135,238 @@ Write to a memory file.
 }
 ```
 
-**Returns:** Success confirmation.
-
----
-
-### Communication Tools
+### Communication tools
 
 #### chat_send
 
-Send a message via any connected [chat provider](./chat-providers) (Discord, Telegram, Slack).
+Send a message via any connected [chat provider](./chat-providers).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `provider` | string | Yes | Chat provider name (e.g., `"discord"`, `"telegram"`, `"slack"`) |
-| `target` | string | Yes | Target: `user:<id>` for DMs, `channel:<id>` for channels, or just `<id>` |
-| `message` | string | Yes | Message content to send |
+| `provider` | string | Yes | `"discord"`, `"telegram"`, or `"slack"` |
+| `target` | string | Yes | `user:<id>` for DMs, `channel:<id>` for channels, or just `<id>` |
+| `message` | string | Yes | Message content |
 
-The available providers are listed dynamically based on which providers are configured and connected.
+The available providers are computed at runtime from the configured + connected providers in `op_chat_providers`.
 
-**Example (Discord):**
 ```json
 {
   "name": "chat_send",
   "arguments": {
     "provider": "discord",
-    "target": "123456789012345678",
-    "message": "Reminder: Team meeting in 15 minutes!"
+    "target": "channel:123456789",
+    "message": "Reminder: meeting in 15 minutes."
   }
 }
 ```
-
-**Example (Telegram):**
-```json
-{
-  "name": "chat_send",
-  "arguments": {
-    "provider": "telegram",
-    "target": "98765432",
-    "message": "Build completed successfully!"
-  }
-}
-```
-
-**Example (Slack):**
-```json
-{
-  "name": "chat_send",
-  "arguments": {
-    "provider": "slack",
-    "target": "C12345678",
-    "message": "Deployment finished. All tests passed."
-  }
-}
-```
-
-**Returns:** Success confirmation (e.g., "Message sent via discord to 123456789012345678") or error.
 
 :::note
-This tool is for proactive messaging. Normal conversation responses don't require this tool - they're handled automatically by each provider.
+This tool is for **proactive** messaging. Normal conversation responses don't need it — the orchestrator already replies on the originating provider.
 :::
 
----
-
-### Model Tools
-
-Tools for viewing available AI models and changing the default model used for new sessions.
+### Model tools
 
 #### model_list
 
-List all available AI models grouped by provider, showing the current default.
+List all available AI models grouped by provider, with the current default marked.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| - | - | - | No parameters |
-
-**Example:**
 ```json
-{
-  "name": "model_list",
-  "arguments": {}
-}
+{ "name": "model_list", "arguments": {} }
 ```
 
-**Returns:** Models grouped by provider with context/output limits, current default marked.
-
----
+Returns: models grouped by provider with context/output limits.
 
 #### model_set_default
 
-Set the default AI model for new sessions. Supports fuzzy matching — you can use a partial model name (e.g. "opus" or "sonnet") and the provider will be inferred automatically.
+Set the default model for new sessions. Supports fuzzy matching — partial names work.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `model` | string | Yes | Model ID or partial name to match (e.g. `"claude-sonnet-4-20250514"` or `"opus"`) |
-| `provider` | string | No | Provider ID (e.g. `"anthropic"`). Inferred from model match if omitted. |
+| `model` | string | Yes | Model ID or partial name (e.g. `"gpt-4o"` or just `"4o"`) |
+| `provider` | string | No | Provider ID (e.g. `"openai"`). Inferred from the match if omitted. |
 
-**Example (exact):**
 ```json
 {
   "name": "model_set_default",
-  "arguments": {
-    "model": "claude-opus-4-20250514",
-    "provider": "anthropic"
-  }
+  "arguments": { "model": "gpt-4o", "provider": "openai" }
 }
 ```
 
-**Example (fuzzy):**
+Or fuzzy:
+
 ```json
 {
   "name": "model_set_default",
-  "arguments": {
-    "model": "opus"
-  }
+  "arguments": { "model": "gemini-2.0-flash" }
 }
 ```
-
-**Returns:** Confirmation with the matched model's full ID and limits, or an error with suggestions if the match is ambiguous or not found.
 
 :::note
-Changing the default model only affects **new sessions**. Existing sessions continue using the model they were started with.
+Changing the default only affects **new** sessions. Existing sessions keep their original model.
 :::
 
----
-
-### Calendar Tools
+### Calendar tools
 
 #### calendar_read
 
-Read events from configured calendar feeds.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `calendar` | string | No | Calendar name (reads all if not specified) |
-| `days` | number | No | Number of days to look ahead (default: 7) |
+| `calendar` | string | No | Calendar name (reads all if omitted) |
+| `days` | number | No | Days to look ahead (default 7) |
 
-**Example:**
 ```json
 {
   "name": "calendar_read",
-  "arguments": {
-    "calendar": "Personal",
-    "days": 14
-  }
+  "arguments": { "calendar": "Personal", "days": 14 }
 }
 ```
 
-**Returns:** List of events with title, time, and location.
+Calendar feeds are configured at `/integrations` in the admin UI.
 
----
+### Vault tools
 
-### Vault Tools
-
-Tools for managing an Obsidian vault.
+Tools for managing an Obsidian vault. Path configured at `/integrations`.
 
 #### vault_read
 
-Read a note from the vault.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | Yes | Path to note within vault |
-
-**Example:**
-```json
-{
-  "name": "vault_read",
-  "arguments": {
-    "path": "Projects/ProjectX.md"
-  }
-}
-```
-
-**Returns:** Note contents.
-
----
 
 #### vault_write
 
-Write a note to the vault.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | Yes | Path to note within vault |
+| `path` | string | Yes | Path within vault |
 | `content` | string | Yes | Note content |
 
-**Example:**
-```json
-{
-  "name": "vault_write",
-  "arguments": {
-    "path": "Daily/2024-01-15.md",
-    "content": "# Daily Note\n\n## Tasks\n- [ ] Review code"
-  }
-}
-```
-
-**Returns:** Success confirmation. If auto_sync is enabled, also commits to git.
-
----
+If `auto_sync` is enabled, the change is committed to git automatically.
 
 #### vault_list
-
-List notes in a vault directory.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | No | Path within vault (defaults to root) |
 
-**Example:**
-```json
-{
-  "name": "vault_list",
-  "arguments": {
-    "path": "Projects"
-  }
-}
-```
-
-**Returns:** List of notes and folders.
-
----
-
 #### vault_search
-
-Search vault content.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | Yes | Search query |
 
-**Example:**
-```json
-{
-  "name": "vault_search",
-  "arguments": {
-    "query": "meeting notes"
-  }
-}
-```
-
-**Returns:** List of matching notes with excerpts.
-
----
-
-### Web Tools
+### Web tools
 
 #### web_fetch
 
-Fetch and parse a web page.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `url` | string | Yes | URL to fetch |
+| `url` | string | Yes | URL to fetch (HTTP or HTTPS) |
 
-**Example:**
 ```json
 {
   "name": "web_fetch",
-  "arguments": {
-    "url": "https://example.com/api/docs"
-  }
+  "arguments": { "url": "https://example.com/api/docs" }
 }
 ```
 
-**Returns:** Parsed content from the web page (HTML converted to readable text).
+Returns: HTML converted to readable text. Response size is capped; only `http://` and `https://` schemes are accepted.
 
-:::caution Rate Limiting
-Web fetching is subject to rate limiting. Avoid excessive requests to the same domain.
-:::
+### GitHub tools
 
----
-
-### GitHub Tools
+Token configured via `GITHUB_TOKEN` env var or the `GITHUB_TOKEN` row in `op_secrets`. Toggle enablement at `/integrations`.
 
 #### github_list_issues
-
-List issues from a GitHub repository.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `owner` | string | Yes | Repository owner |
 | `repo` | string | Yes | Repository name |
-| `state` | string | No | Issue state: open, closed, all (default: open) |
-
-**Example:**
-```json
-{
-  "name": "github_list_issues",
-  "arguments": {
-    "owner": "open-pact",
-    "repo": "openpact",
-    "state": "open"
-  }
-}
-```
-
-**Returns:** List of issues with title, number, labels, and assignees.
-
----
+| `state` | string | No | `open` / `closed` / `all` (default `open`) |
 
 #### github_create_issue
-
-Create a new GitHub issue.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `owner` | string | Yes | Repository owner |
 | `repo` | string | Yes | Repository name |
 | `title` | string | Yes | Issue title |
-| `body` | string | No | Issue body (markdown) |
-| `labels` | string[] | No | Labels to apply |
+| `body` | string | No | Markdown body |
+| `labels` | string[] | No | Labels |
 
-**Example:**
-```json
-{
-  "name": "github_create_issue",
-  "arguments": {
-    "owner": "open-pact",
-    "repo": "openpact",
-    "title": "Add support for webhooks",
-    "body": "## Description\n\nWe should add webhook support for...",
-    "labels": ["enhancement"]
-  }
-}
-```
-
-**Returns:** Created issue URL and number.
-
----
-
-### Script Tools
-
-Tools for Starlark script execution.
+### Script tools
 
 #### script_list
 
-List available Starlark scripts.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| - | - | - | No parameters |
-
-**Example:**
 ```json
-{
-  "name": "script_list",
-  "arguments": {}
-}
+{ "name": "script_list", "arguments": {} }
 ```
 
-**Returns:** List of scripts with name, description, and required secrets.
-
----
+Returns: list of scripts with name, description, declared secrets, and approval status.
 
 #### script_run
 
-Execute a named Starlark script.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | Yes | Script name (without .star extension) |
+| `name` | string | Yes | Script name (without `.star`) |
 | `function` | string | No | Specific function to call |
-| `args` | array | No | Arguments for the function |
+| `args` | array | No | Function arguments |
 
-**Example (run entire script):**
 ```json
 {
   "name": "script_run",
-  "arguments": {
-    "name": "weather"
-  }
+  "arguments": { "name": "weather", "function": "get_weather", "args": ["London"] }
 }
 ```
 
-**Example (call specific function):**
-```json
-{
-  "name": "script_run",
-  "arguments": {
-    "name": "weather",
-    "function": "get_weather",
-    "args": ["London"]
-  }
-}
-```
-
-**Returns:** Script output (with secrets automatically redacted).
-
----
+Approval is required before first run unless the script is in `admin.allowlist`.
 
 #### script_exec
 
-Execute arbitrary Starlark code.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `code` | string | Yes | Starlark code to execute |
+| `code` | string | Yes | Starlark source to execute |
 
-**Example:**
 ```json
 {
   "name": "script_exec",
-  "arguments": {
-    "code": "result = 2 + 2\nprint(result)"
-  }
+  "arguments": { "code": "result = 2 + 2\nprint(result)" }
 }
 ```
-
-**Returns:** Execution output.
-
-:::caution Approval Required
-Arbitrary code execution may require approval depending on configuration.
-:::
-
----
 
 #### script_reload
 
-Reload scripts from disk.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| - | - | - | No parameters |
-
-**Example:**
 ```json
-{
-  "name": "script_reload",
-  "arguments": {}
-}
+{ "name": "script_reload", "arguments": {} }
 ```
 
-**Returns:** List of reloaded scripts.
+Returns: list of reloaded scripts.
 
----
+### Schedule tools
 
-### Schedule Tools
-
-Tools for managing [scheduled jobs](/docs/features/scheduling). Schedules run Starlark scripts or AI agent sessions on a cron timer.
+Tools for managing [scheduled jobs](./scheduling). Schedules run Starlark scripts or AI agent sessions on a cron timer.
 
 #### schedule_list
 
-List all scheduled jobs with their status and last run info.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| - | - | - | No parameters |
-
-**Example:**
 ```json
-{
-  "name": "schedule_list",
-  "arguments": {}
-}
+{ "name": "schedule_list", "arguments": {} }
 ```
 
-**Returns:** List of schedules with ID, name, type, cron expression, enabled status, run_once flag, output target, and last run info.
-
----
+Returns: list of schedules (id, name, type, cron expression, enabled, run_once, output target, last-run info).
 
 #### schedule_create
 
-Create a new scheduled job. Validates the cron expression at creation time.
-
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | Yes | Human-readable name for the schedule |
-| `cron_expr` | string | Yes | Cron expression (5 fields: min hour dom month dow) |
-| `type` | string | Yes | Job type: `"script"` or `"agent"` |
-| `script_name` | string | No | Script filename (required for type `"script"`, e.g. `"my_script.star"`) |
-| `prompt` | string | No | Prompt for AI session (required for type `"agent"`) |
-| `enabled` | boolean | No | Whether the schedule is active (default: `true`) |
-| `output_provider` | string | No | Chat provider to send output to (e.g. `"discord"`) |
-| `output_channel` | string | No | Channel ID to send output to (e.g. `"channel:123456"`) |
-| `run_once` | boolean | No | If `true`, the schedule auto-disables after one execution |
+| `name` | string | Yes | Display name |
+| `cron_expr` | string | Yes | 5-field cron expression |
+| `type` | string | Yes | `"script"` or `"agent"` |
+| `script_name` | string | No | Required for `"script"` type (e.g. `"daily_report.star"`) |
+| `prompt` | string | No | Required for `"agent"` type |
+| `enabled` | boolean | No | Default `true` |
+| `output_provider` | string | No | Chat provider for output delivery |
+| `output_channel` | string | No | Channel target |
+| `run_once` | boolean | No | Auto-disable after first run |
 
-**Example (script job):**
 ```json
 {
   "name": "schedule_create",
@@ -651,42 +379,10 @@ Create a new scheduled job. Validates the cron expression at creation time.
 }
 ```
 
-**Example (agent job with output):**
-```json
-{
-  "name": "schedule_create",
-  "arguments": {
-    "name": "Status update",
-    "cron_expr": "0 */2 * * *",
-    "type": "agent",
-    "prompt": "Summarize today's open issues and post a status update.",
-    "output_provider": "discord",
-    "output_channel": "channel:123456789"
-  }
-}
-```
+#### schedule_update / schedule_delete / schedule_enable / schedule_disable
 
-**Returns:** Confirmation with the new schedule's ID and name.
+All take a single `id` parameter (`schedule_update` also takes any of the create-fields to overwrite).
 
----
-
-#### schedule_update
-
-Update an existing scheduled job by ID. Only provided fields are updated.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | Yes | Schedule ID to update |
-| `name` | string | No | New name |
-| `cron_expr` | string | No | New cron expression |
-| `type` | string | No | New job type: `"script"` or `"agent"` |
-| `script_name` | string | No | New script name |
-| `prompt` | string | No | New prompt |
-| `output_provider` | string | No | Chat provider for output delivery |
-| `output_channel` | string | No | Channel ID for output delivery |
-| `run_once` | boolean | No | If `true`, the schedule auto-disables after one execution |
-
-**Example:**
 ```json
 {
   "name": "schedule_update",
@@ -698,77 +394,7 @@ Update an existing scheduled job by ID. Only provided fields are updated.
 }
 ```
 
-**Returns:** Confirmation with the updated schedule's ID and name.
-
----
-
-#### schedule_delete
-
-Delete a scheduled job by ID.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | Yes | Schedule ID to delete |
-
-**Example:**
-```json
-{
-  "name": "schedule_delete",
-  "arguments": {
-    "id": "a1b2c3d4e5f6g7h8"
-  }
-}
-```
-
-**Returns:** Confirmation that the schedule was deleted.
-
----
-
-#### schedule_enable
-
-Enable a scheduled job by ID.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | Yes | Schedule ID to enable |
-
-**Example:**
-```json
-{
-  "name": "schedule_enable",
-  "arguments": {
-    "id": "a1b2c3d4e5f6g7h8"
-  }
-}
-```
-
-**Returns:** Confirmation that the schedule was enabled.
-
----
-
-#### schedule_disable
-
-Disable a scheduled job by ID. The job stops running but its configuration is preserved.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | Yes | Schedule ID to disable |
-
-**Example:**
-```json
-{
-  "name": "schedule_disable",
-  "arguments": {
-    "id": "a1b2c3d4e5f6g7h8"
-  }
-}
-```
-
-**Returns:** Confirmation that the schedule was disabled.
-
----
-
-## Tool Summary Table
+## Tool summary
 
 | Tool | Category | Description |
 |------|----------|-------------|
@@ -777,30 +403,18 @@ Disable a scheduled job by ID. The job stops running but its configuration is pr
 | `workspace_list` | Workspace | List `ai-data/` files |
 | `memory_read` | Memory | Read memory files |
 | `memory_write` | Memory | Write to memory files |
-| `chat_send` | Communication | Send messages via any chat provider |
+| `chat_send` | Communication | Proactive message via any chat provider |
 | `model_list` | Models | List available AI models |
-| `model_set_default` | Models | Change the default model for new sessions |
+| `model_set_default` | Models | Change the default for new sessions |
 | `calendar_read` | Calendar | Read calendar events |
-| `vault_read` | Vault | Read Obsidian notes |
-| `vault_write` | Vault | Write Obsidian notes |
-| `vault_list` | Vault | List vault notes |
-| `vault_search` | Vault | Search vault content |
-| `web_fetch` | Web | Fetch web pages |
-| `github_list_issues` | GitHub | List repository issues |
-| `github_create_issue` | GitHub | Create new issues |
-| `script_list` | Scripts | List Starlark scripts |
-| `script_run` | Scripts | Run named scripts |
-| `script_exec` | Scripts | Execute Starlark code |
-| `script_reload` | Scripts | Reload scripts from disk |
-| `schedule_list` | Schedules | List all scheduled jobs |
-| `schedule_create` | Schedules | Create a new scheduled job |
-| `schedule_update` | Schedules | Update an existing scheduled job |
-| `schedule_delete` | Schedules | Delete a scheduled job |
-| `schedule_enable` | Schedules | Enable a scheduled job |
-| `schedule_disable` | Schedules | Disable a scheduled job |
+| `vault_read/write/list/search` | Vault | Obsidian vault access |
+| `web_fetch` | Web | Fetch HTTP/HTTPS pages |
+| `github_list_issues` / `github_create_issue` | GitHub | Issue management |
+| `script_list/run/exec/reload` | Scripts | Starlark execution |
+| `schedule_list/create/update/delete/enable/disable` | Schedules | Cron schedules |
 
-## Related Documentation
+## Related
 
-- **[Configuration Overview](../configuration/overview)** - Enable and configure tools
-- **[YAML Reference](../configuration/yaml-reference)** - Tool-specific settings
-- **[Security Overview](../security/overview)** - Tool security model
+- **[Configuration Overview](../configuration/overview)** — what the tools depend on.
+- **[Security Overview](../security/overview)** — how the registry boundary works.
+- **[Workspace Layout](./workspace)** — what the workspace tools can and can't reach.

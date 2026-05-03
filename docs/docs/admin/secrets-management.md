@@ -258,75 +258,72 @@ print("Using secret: WEATHER_API_KEY")
 
 ### 6. Secure the Data Directory
 
-The secrets file is stored in the `secure/data/` directory (AI has zero access):
+Starlark secrets live in the shared SQLite database under `secure/data/` (AI has zero access):
 
 ```
 secure/
 └── data/
-    └── secrets.json    # Encrypted at rest
+    ├── data_encryption_key   # AES key for op_secrets (separate from JWT)
+    ├── jwt_secret             # JWT signing key
+    └── stackllm.db            # Holds op_secrets + the rest of OpenPact's state
 ```
 
-Ensure proper file permissions:
+Ensure proper file permissions (`EnsureDirs` does this on first boot):
+
 ```bash
-chmod 600 secure/data/secrets.json
+chmod 600 secure/data/data_encryption_key
+chmod 600 secure/data/stackllm.db
 chmod 700 secure/data/
 chmod 700 secure/
 ```
 
-### 7. Use Environment Variables in Production
+### 7. Reach for a real secrets manager in production
 
-For containerized deployments, inject secrets via environment:
-
-```bash
-docker run -e WEATHER_API_KEY="sk-..." openpact
-```
-
-Or use a secrets manager:
+For Starlark secrets, the admin UI's encrypted `op_secrets` store is the supported path — there is no env-var fallback for them. For chat-provider tokens (`DISCORD_TOKEN`, etc.), the GitHub PAT (`GITHUB_TOKEN`), and the bootstrap auth secret (`ADMIN_JWT_SECRET`), inject via env vars in production. Use a real secrets manager (Vault, AWS Secrets Manager, Doppler, etc.) populating those env vars at runtime — don't hard-code into compose files.
 
 ```yaml
-# docker-compose.yml with secrets
+# docker-compose.yml using Docker secrets for the env-var path
 services:
   openpact:
-    secrets:
-      - weather_api_key
+    image: ghcr.io/open-pact/openpact:latest
     environment:
-      WEATHER_API_KEY_FILE: /run/secrets/weather_api_key
+      DISCORD_TOKEN_FILE: /run/secrets/discord_token
+      GITHUB_TOKEN_FILE:  /run/secrets/github_token
+    secrets:
+      - discord_token
+      - github_token
 
 secrets:
-  weather_api_key:
+  discord_token:
+    external: true
+  github_token:
     external: true
 ```
 
+(Note: the `*_FILE` convention requires an entrypoint to read the file and re-export the env var. The official OpenPact image doesn't do this out of the box — adapt with a wrapper script if needed.)
+
 ## Storage Details
 
-### File-Based Storage
+### Database-backed storage
 
-Secrets are stored in `secure/data/secrets.json`:
+Starlark secrets are persisted in the `op_secrets` table inside `<workspace>/secure/data/stackllm.db`:
 
-```json
-{
-  "WEATHER_API_KEY": {
-    "value": "encrypted:...",
-    "last_updated": "2024-01-15T10:30:00Z"
-  }
-}
+```
+op_secrets
+| name              | nonce | ciphertext       | last_updated         |
+|-------------------|-------|------------------|----------------------|
+| WEATHER_API_KEY   | …     | <AES-GCM blob>   | 2026-04-15T10:30:00Z |
 ```
 
-- File permissions: 0600 (owner read/write only)
-- Values are encrypted using a key derived from the JWT secret
+- DB file permissions: `0600` (owner read/write only).
+- Values encrypted with **AES-256-GCM** under `secure/data/data_encryption_key` (rotates independently of the JWT secret).
+- Plaintext is decrypted in-memory only when a Starlark script calls `secrets.get()`.
 
-### Environment Variable Override
+### No environment-variable override for Starlark secrets
 
-Environment variables can override file-based secrets:
+There is no `OPENPACT_SECRET_*` env-var fallback. Starlark secrets are managed exclusively through the admin UI (or `POST /api/secrets/:name`) and stored encrypted in `op_secrets`. This is intentional: it keeps decryption gated by the `data_encryption_key` rather than process environment, and prevents accidental leakage via container-image inspection or process listings.
 
-```bash
-export OPENPACT_SECRET_WEATHER_API_KEY="sk-..."
-```
-
-Priority order:
-1. Environment variable (`OPENPACT_SECRET_*`)
-2. Admin UI / API set value
-3. Configuration file reference
+Some non-Starlark tokens **do** have env-var fallbacks (`DISCORD_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `TELEGRAM_BOT_TOKEN`, `GITHUB_TOKEN`) — but those are read directly by the relevant subsystem, not surfaced as Starlark secrets.
 
 ## Troubleshooting
 

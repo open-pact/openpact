@@ -5,7 +5,36 @@ sidebar_position: 3
 
 # First Steps
 
-Now that OpenPact is installed, let's configure it properly for your use case.
+Now that OpenPact is running, let's set up an admin account, sign in to a provider, and verify the bot can talk to a chat platform.
+
+## Run the Setup Wizard
+
+Open `http://localhost:8888` in a browser. On a fresh workspace OpenPact will redirect you to a 3-step wizard:
+
+1. **Account** — create the first admin user (username + password). This issues a refresh-token cookie immediately so subsequent steps can call authenticated endpoints.
+2. **Profile** — fill in `SOUL.md`, `USER.md`, and (optionally) seed `MEMORY.md`. These get stored under `<workspace>/ai-data/` and are injected into the system prompt on the first turn of each new session.
+3. **LLM Provider** — sign in to at least one provider, then pick a default model.
+
+The wizard cannot finish until a default model is set.
+
+## Sign in to an LLM Provider
+
+OpenPact ships with the in-process [stackllm](https://github.com/stack-bound/stackllm) engine and exposes four providers:
+
+| Provider | How you sign in |
+|----------|-----------------|
+| **OpenAI** | Paste an API key, **or** click "Sign in with ChatGPT" for the Codex device-flow (no API key required). |
+| **GitHub Copilot** | Click "Sign in with GitHub". OpenPact shows a `user_code` and a verification URL — open the URL, paste the code, approve. |
+| **Google Gemini** | Paste an API key from [Google AI Studio](https://aistudio.google.com/apikey). |
+| **Ollama** | Enter the base URL (e.g. `http://localhost:11434`). |
+
+Anthropic is intentionally not supported — third-party harness use is no longer permitted by Anthropic's terms.
+
+After at least one provider is authenticated, pick a default model from the dropdown and click **Set as default**. The wizard's "Finish" button enables once a default is set.
+
+:::tip Switch model later
+You can change the default model at any time from `/engine` in the admin UI. New sessions pick up the new default immediately; existing sessions keep using their first-turn model unless you start a fresh session.
+:::
 
 ## Discord Bot Setup
 
@@ -22,7 +51,7 @@ Now that OpenPact is installed, let's configure it properly for your use case.
 2. Click **"Add Bot"** if prompted
 3. Under **"Privileged Gateway Intents"**, enable:
    - **Message Content Intent** (required for reading messages)
-4. Copy the **Token** - this is your `DISCORD_TOKEN`
+4. Copy the **Token**
 
 :::caution Keep Your Token Secret
 Never share your bot token or commit it to version control. Anyone with this token can control your bot.
@@ -51,139 +80,59 @@ To restrict who can talk to your bot:
 2. Right-click your username anywhere in Discord
 3. Click **"Copy User ID"**
 
-Use this ID in your configuration's `allowed_users` list.
+You'll add this ID to the **Allowed Users** list in the admin UI.
 
-## AI Provider Authentication
+### Connect the Bot
 
-The easiest way to authenticate with your AI provider is through the **Admin UI**:
+In the OpenPact admin UI:
 
-1. Open the Admin UI at `http://localhost:8080`
-2. Navigate to **Engine Auth**
-3. Click **Sign In** to authenticate via OAuth (no API key needed)
+1. Navigate to **Providers**.
+2. Pick **Discord**, paste the bot token, add your user ID under **Allowed Users**.
+3. Toggle **Enabled**.
 
-This uses browser-based OAuth, so you do not need to manage API keys manually.
+OpenPact connects to Discord immediately. DM the bot or mention it in a channel — the orchestrator routes the message through the stackllm agent and replies with streaming text.
 
-:::tip Alternative: API Keys
-If you prefer pay-per-token billing or need to run headless without OAuth, you can set a provider API key as an environment variable instead:
-
-| Provider | Environment Variable | Get Key At |
-|----------|---------------------|------------|
-| Anthropic | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) |
-| OpenAI | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/) |
-| Google | `GOOGLE_API_KEY` | [aistudio.google.com](https://aistudio.google.com/) |
+:::tip Env-var fallback
+If you'd rather not paste the token in the UI, you can set `DISCORD_TOKEN` (and `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `TELEGRAM_BOT_TOKEN` for those) before starting the binary. The DB-stored value wins when both are present.
 :::
 
-### GitHub Token (Optional)
+## Optional: GitHub Token
 
-For GitHub integration:
+The `github_*` MCP tools need a personal access token:
 
-1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
-2. Click **"Generate new token (classic)"**
+1. Go to [github.com/settings/tokens](https://github.com/settings/tokens).
+2. Click **"Generate new token (classic)"**.
 3. Select scopes:
-   - `repo` (for private repositories)
-   - `public_repo` (for public repositories only)
-4. Copy the token - this is your `GITHUB_TOKEN`
+   - `repo` (private repositories)
+   - or `public_repo` (public only)
+4. Copy the token.
 
-## Basic Configuration
+Either set it via the admin UI (**Secrets** → `GITHUB_TOKEN`) or via the `GITHUB_TOKEN` environment variable. The DB row wins if both are set.
 
-### Create the Configuration File
+## Test the Engine from the Admin UI
 
-Create `openpact.yaml` with your settings:
+You can chat with your AI directly from the browser without involving Discord:
 
-```yaml
-# Workspace for file storage
-workspace:
-  path: /workspace
+1. Navigate to **Sessions**.
+2. Click **New Session**, type a prompt, hit send.
+3. The reply streams in via SSE. Detail-mode toggles let you show/hide thinking blocks and tool calls.
 
-# Discord bot settings
-discord:
-  enabled: true
-  allowed_users:
-    - "YOUR_DISCORD_USER_ID"  # Replace with your ID
+If anything goes wrong, check the logs (`docker compose logs -f`, or `journalctl -u openpact -f`).
 
-# AI engine configuration
-engine:
-  type: opencode
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-
-# Logging settings
-logging:
-  level: info
-  json: false
-
-# Health check server
-server:
-  health_addr: ":8080"
-```
-
-### Environment Variables
-
-Set your secrets as environment variables:
+## Verify Health
 
 ```bash
-export DISCORD_TOKEN=your_discord_bot_token
+curl http://localhost:8081/healthz   # Default health-server bind; configurable in /settings/advanced
 ```
 
-Or use a `.env` file with Docker Compose:
-
-```bash
-# .env
-DISCORD_TOKEN=your_discord_bot_token
-```
-
-## Testing the Connection
-
-### Start OpenPact
-
-```bash
-# Docker
-docker run -d \
-  --name openpact \
-  -v openpact-workspace:/workspace \
-  -v $(pwd)/openpact.yaml:/workspace/secure/config.yaml:ro \
-  -e DISCORD_TOKEN=$DISCORD_TOKEN \
-  -p 8080:8080 \
-  ghcr.io/open-pact/openpact:latest
-
-# Or with Docker Compose
-docker compose up -d
-```
-
-### Verify Health
-
-```bash
-curl http://localhost:8080/health
-```
-
-Expected response:
-
-```json
-{
-  "status": "healthy",
-  "checks": {
-    "discord": "connected",
-    "mcp": "ready"
-  }
-}
-```
-
-### Test Discord
-
-1. Open Discord and find your bot
-2. Send a direct message: "Hello!"
-3. The bot should respond using the configured AI model
-
-If you added yourself to `allowed_users`, only you can message the bot. Remove the list to allow anyone.
+The detailed `/health` endpoint reports per-component status (chat providers, scheduler, etc.).
 
 ## Initial Customization
 
-### Set Up Identity (SOUL.md)
-
-Create a `SOUL.md` file in the `ai-data/` subdirectory of your workspace to give your AI a personality:
+The setup wizard already creates `SOUL.md`, `USER.md`, and `MEMORY.md` in `<workspace>/ai-data/`. You can edit them directly on disk or through the admin UI's **Profile** view. They're loaded into the system prompt on the first turn of every new session.
 
 ```markdown
-# Identity
+# Identity (SOUL.md)
 
 You are a helpful personal assistant. You are friendly, concise, and focused on being useful.
 
@@ -191,16 +140,12 @@ You are a helpful personal assistant. You are friendly, concise, and focused on 
 
 - Be direct and helpful
 - Ask clarifying questions when needed
-- Respect privacy - don't share user information
+- Respect privacy — don't share user information
 - Admit when you don't know something
 ```
 
-### Add Personal Context (USER.md)
-
-Create a `USER.md` file in `ai-data/` with information about yourself:
-
 ```markdown
-# User Profile
+# User Profile (USER.md)
 
 Name: Your Name
 Timezone: America/New_York
@@ -212,55 +157,39 @@ Preferences: Prefers concise responses
 - Technologies: Python, React, PostgreSQL
 ```
 
-### Enable Memory (MEMORY.md)
-
-Create a `MEMORY.md` file in `ai-data/` for persistent notes:
-
 ```markdown
-# Memory
+# Memory (MEMORY.md)
 
-## Important Notes
-
-(The AI can update this file to remember things)
+(The AI updates this file via the memory_write tool to remember things across sessions.)
 ```
 
 ## Next Steps
 
-- **[Configuration Overview](../configuration/overview)** - Full configuration options
-- **[YAML Reference](../configuration/yaml-reference)** - Complete settings reference
-- **[Context Files](../configuration/context-files)** - Customize AI behavior
-- **[MCP Tools](../features/mcp-tools)** - Available capabilities
+- **[Configuration Overview](../configuration/overview)** — what lives in YAML versus the admin UI.
+- **[YAML Reference](../configuration/yaml-reference)** — the complete (and short) bootstrap schema.
+- **[Context Files](../configuration/context-files)** — customize AI behavior.
+- **[MCP Tools](../features/mcp-tools)** — available capabilities.
 
 ## Troubleshooting
 
 ### Bot Shows as Offline
 
-- Check that `DISCORD_TOKEN` is set correctly
-- Verify the bot was added to your server
-- Check logs: `docker logs openpact`
+- Verify the token in the **Providers** view (or `DISCORD_TOKEN` env var).
+- Confirm the bot was actually added to your server (the OAuth invite step).
+- Check logs: `docker logs openpact` or `journalctl -u openpact`.
 
-### Bot Doesn't Respond to Messages
+### Bot Doesn't Respond
 
-- Verify Message Content Intent is enabled in Discord Developer Portal
-- Check if your user ID is in `allowed_users` (or remove the restriction)
-- Check logs for errors
+- Confirm Message Content Intent is enabled in the Discord Developer Portal.
+- Confirm your user ID is in the Allowed Users list (or remove the restriction).
+- Check the **Engine** page shows an authenticated provider with a default model selected.
 
-### "Unauthorized" Errors
+### Provider Sign-in Fails
 
-- Your API key may be invalid or expired
-- Check that the correct environment variable is set
-- Verify the key has not been revoked
+- For API-key providers: re-paste the key, double-check there are no leading/trailing whitespace characters.
+- For device-flow providers (Copilot / OpenAI Codex): make sure you click the verification link **and** approve before the code expires (typically ~15 minutes).
+- The stackllm `ManagedHandler` serializes one device flow per provider — if a flow is stuck, the page will reuse the in-flight code rather than minting a new one. Cancel and retry from a different tab if needed.
 
 ### Rate Limiting
 
-If you hit rate limits:
-
-- Reduce the number of messages
-- Configure rate limiting in `openpact.yaml`:
-
-```yaml
-server:
-  rate_limit:
-    rate: 5   # requests per second
-    burst: 10 # max burst
-```
+If you hit rate limits, lower the rate/burst values in the admin UI's **Advanced Settings** view (`/settings/advanced`). Changes take effect after a restart — the rate limiter reads the value once at boot.

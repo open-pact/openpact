@@ -28,7 +28,7 @@ docker run -d \
   --name openpact \
   -v openpact-workspace:/workspace \
   -e DISCORD_TOKEN=your_discord_bot_token \
-  -p 8080:8080 \
+  -p 8888:8888 \
   ghcr.io/open-pact/openpact:latest
 ```
 
@@ -36,10 +36,10 @@ Replace `your_discord_bot_token` with your actual bot token.
 
 ### What This Does
 
-- Creates a container named `openpact`
-- Mounts a persistent volume for your workspace at `/workspace`
-- Passes your Discord token as an environment variable
-- Exposes the admin UI and health check endpoint on port 8080
+- Creates a container named `openpact`.
+- Mounts a persistent volume for your workspace at `/workspace`.
+- Passes your Discord token as an environment variable (optional — can also be set in the admin UI).
+- Exposes the admin UI on port `8888`. The health endpoints are on a separate port (default `8081`); add `-p 8081:8081` if you want them reachable from the host.
 
 ## Verify It's Running
 
@@ -65,7 +65,7 @@ Look for messages indicating successful startup:
 ### Check Health Endpoint
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8081/healthz
 ```
 
 A healthy response looks like:
@@ -123,13 +123,13 @@ Common issues:
 ### Health Check Fails
 
 ```bash
-curl -v http://localhost:8080/health
+curl -v http://localhost:8081/healthz
 ```
 
 If the port isn't accessible:
 - Verify the container is running: `docker ps`
-- Check if port 8080 is already in use
-- Try a different port: `-p 9090:8080`
+- Check if port 8888 (admin UI) or 8081 (health) is already in use.
+- Try a different host port: `-p 9090:8888` for the admin UI.
 
 ## Stop and Remove
 

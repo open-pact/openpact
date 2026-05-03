@@ -25,7 +25,7 @@ Returns the general health status of the application.
 
 ```
 GET /health HTTP/1.1
-Host: localhost:8080
+Host: localhost:8081
 ```
 
 ### Response
@@ -74,7 +74,7 @@ Kubernetes-style liveness probe. Returns a minimal response for fast checking.
 
 ```
 GET /healthz HTTP/1.1
-Host: localhost:8080
+Host: localhost:8081
 ```
 
 ### Response
@@ -129,7 +129,7 @@ Readiness probe indicating the application is ready to accept traffic.
 
 ```
 GET /ready HTTP/1.1
-Host: localhost:8080
+Host: localhost:8081
 ```
 
 ### Response
@@ -207,7 +207,7 @@ Returns application metrics in JSON format.
 
 ```
 GET /metrics HTTP/1.1
-Host: localhost:8080
+Host: localhost:8081
 ```
 
 ### Response
@@ -288,8 +288,8 @@ Host: localhost:8080
 
 ```nginx
 upstream openpact {
-    server openpact-1:8080;
-    server openpact-2:8080;
+    server openpact-1:8081;
+    server openpact-2:8081;
 }
 
 server {
@@ -310,8 +310,8 @@ server {
 backend openpact
     option httpchk GET /healthz
     http-check expect string OK
-    server openpact-1 10.0.0.1:8080 check
-    server openpact-2 10.0.0.2:8080 check
+    server openpact-1 10.0.0.1:8081 check
+    server openpact-2 10.0.0.2:8081 check
 ```
 
 ### AWS ALB
@@ -330,7 +330,7 @@ backend openpact
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD wget -q --spider http://localhost:8080/healthz || exit 1
+  CMD wget -q --spider http://localhost:8081/healthz || exit 1
 ```
 
 Or in docker-compose:
@@ -339,7 +339,7 @@ Or in docker-compose:
 services:
   openpact:
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -356,7 +356,7 @@ scrape_configs:
   - job_name: 'openpact'
     metrics_path: /metrics
     static_configs:
-      - targets: ['openpact:8080']
+      - targets: ['openpact:8081']
 ```
 
 ### Datadog
@@ -367,7 +367,7 @@ init_config:
 
 instances:
   - name: openpact
-    url: http://openpact:8080/metrics
+    url: http://openpact:8081/metrics
     method: GET
 ```
 

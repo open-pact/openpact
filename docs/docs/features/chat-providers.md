@@ -27,7 +27,7 @@ All providers implement the same `chat.Provider` interface, which the orchestrat
        │                  │                  │
        ▼                  ▼                  ▼
 ┌──────────────────────────────────────────────────┐
-│              Chat Provider Interface              │
+│              chat.Provider interface              │
 │  SetMessageHandler() / SetCommandHandler()        │
 │  Start() / Stop() / SendMessage()                 │
 └──────────────────────┬───────────────────────────┘
@@ -36,13 +36,14 @@ All providers implement the same `chat.Provider` interface, which the orchestrat
 ┌──────────────────────────────────────────────────┐
 │                 Orchestrator                      │
 │  Per-channel session management                   │
-│  Source context injection                         │
-│  Unified command handling                         │
+│  System-prompt injection (SOUL/USER/MEMORY)       │
+│  Source context prefix                            │
 └──────────────────────┬───────────────────────────┘
-                       │
+                       │ in-process
                        ▼
 ┌──────────────────────────────────────────────────┐
-│              AI Engine (OpenCode)                 │
+│        engine.Stack — stackllm in-process        │
+│        agent.Agent + tools.Registry              │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -54,17 +55,15 @@ Each `(provider, channelID)` pair gets its own independent session. This means:
 - Two Discord channels each maintain their own session and history
 - The `/switch` command only affects the channel where it was issued
 
-Session mappings are persisted to `<DataDir>/channel_sessions.json`, and detail mode settings to `<DataDir>/channel_modes.json`:
+Session mappings live in the `op_channel_sessions` SQLite table; detail-mode settings in `op_channel_modes`. Sessions are persisted by stackllm's `session.SQLiteStore` in the same DB file (`<workspace>/secure/data/stackllm.db`).
 
-```json
-{
-  "sessions": {
-    "discord:123456789": "ses_abc123",
-    "telegram:98765432": "ses_def456",
-    "slack:C12345678": "ses_ghi789"
-  }
-}
-```
+Conceptually:
+
+| provider | channel_id | session_id |
+|----------|-----------|-----------|
+| `discord` | `123456789` | `7c2a5e1d-…` |
+| `telegram` | `98765432` | `a1b2c3d4-…` |
+| `slack` | `C12345678` | `f6e5d4c3-…` |
 
 ### Automatic Session Creation
 
@@ -118,30 +117,12 @@ The `provider` parameter determines which platform to send through. The `target`
 
 ## Enabling Multiple Providers
 
-Configure each provider in `openpact.yaml`:
+Tokens, allow lists, and enablement live in the `op_chat_providers` table and are managed from the admin UI's **Providers** page (`/providers`). Pick the provider, paste the token, add allow lists, toggle "Enabled".
 
-```yaml
-discord:
-  enabled: true
-  allowed_users:
-    - "123456789012345678"
-
-telegram:
-  enabled: true
-  allowed_users:
-    - "987654321"
-
-slack:
-  enabled: true
-  allowed_users:
-    - "U12345678"
-  allowed_chans:
-    - "C12345678"
-```
-
-Set the corresponding environment variables:
+Tokens can also be supplied via env-var fallbacks (`DISCORD_TOKEN`, `TELEGRAM_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`). The DB row wins when both are set.
 
 ```bash
+# .env or systemd EnvironmentFile (optional)
 DISCORD_TOKEN=your_discord_bot_token
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 SLACK_BOT_TOKEN=xoxb-your-slack-bot-token

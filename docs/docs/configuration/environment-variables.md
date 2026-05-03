@@ -5,245 +5,176 @@ sidebar_position: 3
 
 # Environment Variables
 
-Complete reference for all environment variables used by OpenPact.
+OpenPact reads only a small set of bootstrap env vars. LLM provider credentials, logging level, rate-limit settings, calendar feeds, vault config, and so on are **not** read from the environment — they live in the SQLite database and are managed through the admin UI.
 
-## Required Variables
+The complete list, in alphabetical order:
 
-These variables must be set for OpenPact to function.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| [`ADMIN_BIND`](#admin_bind) | from YAML | Override the admin UI bind address. |
+| [`ADMIN_JWT_SECRET`](#admin_jwt_secret) | randomly generated | Override the JWT signing key. |
+| [`CONFIG_PATH`](#config_path) | `<workspace>/secure/config.yaml` | Path to the bootstrap YAML. |
+| [`DISCORD_TOKEN`](#discord_token) | _(unset)_ | Discord bot token (DB wins when both set). |
+| [`GITHUB_TOKEN`](#github_token) | _(unset)_ | GitHub PAT for the GitHub MCP tools. |
+| [`SLACK_APP_TOKEN`](#slack_app_token) | _(unset)_ | Slack app-level token (Socket Mode). |
+| [`SLACK_BOT_TOKEN`](#slack_bot_token) | _(unset)_ | Slack bot user OAuth token. |
+| [`TELEGRAM_BOT_TOKEN`](#telegram_bot_token) | _(unset)_ | Telegram bot token. |
+| [`WORKSPACE_PATH`](#workspace_path) | `/workspace` | Workspace root. |
+
+## Bootstrap
+
+### WORKSPACE_PATH
+
+The root workspace directory. Almost everything else is derived from this.
+
+```bash
+WORKSPACE_PATH=/workspace   # Docker default
+```
+
+Derived paths:
+
+| Derived path | Description |
+|-------------|-------------|
+| `$WORKSPACE_PATH/secure/config.yaml` | Bootstrap YAML. |
+| `$WORKSPACE_PATH/secure/data/jwt_secret` | JWT signing key. |
+| `$WORKSPACE_PATH/secure/data/data_encryption_key` | AES key for `op_secrets`. |
+| `$WORKSPACE_PATH/secure/data/stackllm_auth.json` | LLM provider tokens (mode `0600`). |
+| `$WORKSPACE_PATH/secure/data/stackllm_config.json` | Default model + recent models. |
+| `$WORKSPACE_PATH/secure/data/stackllm.db` | Shared SQLite (`stackllm_*` and `op_*` tables). |
+| `$WORKSPACE_PATH/ai-data/` | AI-accessible data. |
+| `$WORKSPACE_PATH/ai-data/memory/` | Daily memory rolls. |
+| `$WORKSPACE_PATH/ai-data/scripts/` | Starlark scripts. |
+| `$WORKSPACE_PATH/ai-data/skills/` | Skills directory. |
+
+### CONFIG_PATH
+
+Override the bootstrap YAML location. Useful when running the binary outside the standard workspace layout (e.g. local development).
+
+```bash
+CONFIG_PATH=/etc/openpact/config.yaml
+```
+
+### ADMIN_BIND
+
+Override the admin UI bind address.
+
+```bash
+ADMIN_BIND=0.0.0.0:8888    # Listen on all interfaces (Docker default)
+ADMIN_BIND=localhost:9090  # Listen on localhost only, alternative port
+```
+
+### ADMIN_JWT_SECRET
+
+Override the JWT signing key. By default, OpenPact generates a key on first boot and persists it to `secure/data/jwt_secret`. Set this env var if you need a deterministic key (e.g. behind a load balancer with multiple replicas — though that's an unusual deployment for a self-hosted assistant).
+
+```bash
+ADMIN_JWT_SECRET=$(openssl rand -hex 32)
+```
+
+## Chat Provider Tokens (env-var fallbacks)
+
+These tokens can also be set via `/providers` in the admin UI. **The DB row wins when both are present**, so use one or the other consistently.
 
 ### DISCORD_TOKEN
 
-**Required** - Discord bot authentication token.
-
 ```bash
-DISCORD_TOKEN=your_discord_bot_token_here
+DISCORD_TOKEN=your_discord_bot_token
 ```
 
-Get this from the [Discord Developer Portal](https://discord.com/developers/applications) under your application's Bot settings.
-
-:::caution Security
-Never share your bot token or commit it to version control. Anyone with this token can control your bot.
-:::
-
-## AI Provider Keys
-
-**All provider keys are optional.** The recommended way to authenticate is through the Admin UI (Engine Auth page), which uses browser-based OAuth. If you prefer pay-per-token billing or need to run headless without OAuth, set the appropriate key for your chosen provider:
-
-| Variable | Provider | Get Key At |
-|----------|----------|------------|
-| `ANTHROPIC_API_KEY` | Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com/) |
-| `OPENAI_API_KEY` | OpenAI (GPT) | [platform.openai.com](https://platform.openai.com/) |
-| `GOOGLE_API_KEY` | Google (Gemini) | [aistudio.google.com](https://aistudio.google.com/) |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI | Azure Portal |
-
-## Chat Provider Tokens
+Get one from the [Discord Developer Portal](https://discord.com/developers/applications). See [Discord Integration](../features/discord-integration).
 
 ### TELEGRAM_BOT_TOKEN
-
-**Optional** - Telegram bot token (required if Telegram is enabled).
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyz
 ```
 
-Get this from [@BotFather](https://t.me/BotFather) on Telegram. See [Telegram Integration](../features/telegram-integration) for setup.
+Get one from [@BotFather](https://t.me/BotFather). See [Telegram Integration](../features/telegram-integration).
 
 ### SLACK_BOT_TOKEN
-
-**Optional** - Slack Bot User OAuth Token (required if Slack is enabled).
 
 ```bash
 SLACK_BOT_TOKEN=xoxb-your-bot-token
 ```
 
-Get this from [api.slack.com/apps](https://api.slack.com/apps) under **OAuth & Permissions** after installing your app.
+From your Slack app's **OAuth & Permissions** page after install.
 
 ### SLACK_APP_TOKEN
-
-**Optional** - Slack app-level token for Socket Mode (required if Slack is enabled).
 
 ```bash
 SLACK_APP_TOKEN=xapp-your-app-token
 ```
 
-Get this from [api.slack.com/apps](https://api.slack.com/apps) under **Basic Information** > **App-Level Tokens**. See [Slack Integration](../features/slack-integration) for setup.
+From your Slack app's **Basic Information** > **App-Level Tokens** section. Required for Socket Mode. See [Slack Integration](../features/slack-integration).
 
-## Optional Integration Keys
+## Integration Tokens
 
 ### GITHUB_TOKEN
 
-GitHub personal access token for issue management.
+GitHub personal access token for the `github_*` MCP tools.
 
 ```bash
 GITHUB_TOKEN=ghp_...
 ```
 
 Required scopes:
-- `public_repo` - For public repositories only
-- `repo` - For private repositories
 
-Get this from [github.com/settings/tokens](https://github.com/settings/tokens).
+- `public_repo` — public repositories only
+- `repo` — private repositories
 
-## Script Secrets
+Generate one at [github.com/settings/tokens](https://github.com/settings/tokens). Can also be set as a `GITHUB_TOKEN` row in `op_secrets` via the admin UI's **Secrets** page; the DB row wins when both are present.
 
-Custom secrets for Starlark scripts. These are accessed via `secrets.get("KEY")` in scripts.
+## What's NOT an Env Var Anymore
 
-```bash
-# Example script secrets
-WEATHER_API_KEY=your_weather_api_key
-CUSTOM_API_KEY=your_custom_key
-DATABASE_TOKEN=your_database_token
-```
+The following env vars used to be read by the binary and **are no longer**:
 
-To make secrets available to scripts, reference them in `openpact.yaml`:
+| Removed | Replacement |
+|---------|-------------|
+| `ANTHROPIC_API_KEY` | _Anthropic is not supported._ |
+| `OPENAI_API_KEY` | Sign in via `/engine` (API key or Codex device flow). |
+| `GOOGLE_API_KEY` | Sign in via `/engine` (Gemini API key). |
+| `AZURE_OPENAI_API_KEY` | _Azure is not surfaced in the admin UI._ |
+| `OPENCODE_*` | _OpenCode is no longer used._ |
+| `OPENPACT_LOG_LEVEL` / `OPENPACT_LOG_JSON` | `/settings/advanced` (logging section). |
+| `OPENPACT_HEALTH_ADDR` | `/settings/advanced` (health section). |
+| `OPENPACT_RATE_LIMIT` / `OPENPACT_RATE_BURST` | `/settings/advanced` (rate-limit section). |
+| `OPENPACT_ENGINE_TYPE` / `OPENPACT_PROVIDER` / `OPENPACT_MODEL` | `/engine`. |
 
-```yaml
-starlark:
-  secrets:
-    WEATHER_API_KEY: "${WEATHER_API_KEY}"
-    CUSTOM_API_KEY: "${CUSTOM_API_KEY}"
-```
-
-:::tip Secret Safety
-Values from `secrets.get()` are automatically redacted from all output. The AI never sees the actual secret values - only `[REDACTED:KEY_NAME]`.
-:::
-
-## Workspace Path
-
-### WORKSPACE_PATH
-
-The root workspace directory. All internal paths are derived from this:
-
-```bash
-WORKSPACE_PATH=/workspace  # default in Docker
-```
-
-| Derived Path | Description |
-|-------------|-------------|
-| `$WORKSPACE_PATH/secure/config.yaml` | Configuration file |
-| `$WORKSPACE_PATH/secure/data/` | Admin data (secrets, users, approvals) |
-| `$WORKSPACE_PATH/ai-data/` | AI-accessible files (MCP tools scope here) |
-| `$WORKSPACE_PATH/ai-data/memory/` | Daily memory files |
-| `$WORKSPACE_PATH/ai-data/scripts/` | Starlark scripts |
-| `$WORKSPACE_PATH/ai-data/skills/` | Skill definitions |
-
-There is no separate `OPENPACT_DATA_DIR` variable -- all paths are derived from `WORKSPACE_PATH`.
-
-## Runtime Configuration
-
-These variables override corresponding YAML configuration values.
-
-### OPENPACT_ENGINE_TYPE
-
-AI engine type override.
-
-```bash
-OPENPACT_ENGINE_TYPE=opencode
-```
-
-### OPENPACT_PROVIDER
-
-LLM provider override.
-
-```bash
-OPENPACT_PROVIDER=anthropic  # anthropic, openai, google, ollama, etc.
-```
-
-### OPENPACT_MODEL
-
-AI model override.
-
-```bash
-OPENPACT_MODEL=claude-sonnet-4-20250514
-```
-
-## Logging Configuration
-
-### OPENPACT_LOG_LEVEL
-
-Log verbosity level.
-
-```bash
-OPENPACT_LOG_LEVEL=info  # debug, info, warn, error
-```
-
-| Value | Description |
-|-------|-------------|
-| `debug` | Verbose output for troubleshooting |
-| `info` | Normal operational messages (default) |
-| `warn` | Warning conditions only |
-| `error` | Error conditions only |
-
-### OPENPACT_LOG_JSON
-
-Enable JSON-formatted logging for production.
-
-```bash
-OPENPACT_LOG_JSON=true  # true or false
-```
-
-## Server Configuration
-
-### OPENPACT_HEALTH_ADDR
-
-Address for the health check HTTP server.
-
-```bash
-OPENPACT_HEALTH_ADDR=:8080  # default
-OPENPACT_HEALTH_ADDR=:9090  # alternative port
-OPENPACT_HEALTH_ADDR=0.0.0.0:8080  # bind to all interfaces
-```
-
-### OPENPACT_RATE_LIMIT
-
-Requests per second limit.
-
-```bash
-OPENPACT_RATE_LIMIT=10  # default
-```
-
-### OPENPACT_RATE_BURST
-
-Maximum request burst size.
-
-```bash
-OPENPACT_RATE_BURST=20  # default
-```
+LLM provider tokens are written to `<workspace>/secure/data/stackllm_auth.json` (mode `0600`) by stackllm; they never appear in process environment.
 
 ## Setting Environment Variables
 
-### Linux/macOS (Shell)
+### Linux/macOS shell
 
 ```bash
-# Temporary (current session)
+# Temporary
 export DISCORD_TOKEN=your_token
 
-# Permanent (add to ~/.bashrc or ~/.zshrc)
+# Persistent (bash)
 echo 'export DISCORD_TOKEN=your_token' >> ~/.bashrc
 ```
 
-### Docker Run
+### Docker
 
 ```bash
 docker run -d \
   -e DISCORD_TOKEN=your_token \
+  -e GITHUB_TOKEN=your_pat \
+  -p 8888:8888 \
+  -v openpact-workspace:/workspace \
   ghcr.io/open-pact/openpact:latest
 ```
 
-### Docker Compose (.env file)
+### Docker Compose
 
-Create a `.env` file in the same directory as `docker-compose.yml`:
+Create a `.env` next to `docker-compose.yml` (and add it to `.gitignore`):
 
 ```bash
-# .env
 DISCORD_TOKEN=your_discord_bot_token
 GITHUB_TOKEN=your_github_token
-
-# Script secrets
-WEATHER_API_KEY=your_weather_api_key
 ```
 
-Then reference in `docker-compose.yml`:
+Reference it from `docker-compose.yml`:
 
 ```yaml
 services:
@@ -252,64 +183,38 @@ services:
       - .env
 ```
 
-Or use explicit environment references:
+### systemd
 
-```yaml
-services:
-  openpact:
-    environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
+Use the unit file at `docs/systemd/openpact.service` and add an `EnvironmentFile=`:
+
+```ini
+[Service]
+EnvironmentFile=/etc/openpact/openpact.env
 ```
+
+…then put your env vars in `/etc/openpact/openpact.env` (mode `0600`, owned by the service user).
 
 ## Security Best Practices
 
-### Do
-
-- Use environment variables for all secrets
-- Use `.env` files for local development (add to `.gitignore`)
-- Use secret management tools in production (Vault, AWS Secrets Manager, etc.)
-- Rotate keys periodically
-- Use minimal required scopes for API keys
-
-### Don't
-
-- Hard-code secrets in configuration files
-- Commit `.env` files to version control
-- Share API keys or tokens
-- Use production keys in development
-- Log secret values
-
-### .gitignore Example
-
-```gitignore
-# Never commit these
-.env
-.env.local
-.env.production
-*.key
-*.pem
-```
+- Use environment variables (or the admin UI's encrypted `op_secrets` store) for secrets. Never hard-code into YAML.
+- Add `.env` to `.gitignore` and never commit.
+- Rotate tokens periodically.
+- Use minimum-scope tokens (e.g. `public_repo` rather than `repo` if you don't need private repos).
+- For production, prefer a secret manager (Vault, AWS Secrets Manager, Doppler, etc.) injecting env vars at runtime, **or** the admin UI's encrypted secrets store for Starlark-accessible values.
 
 ## Troubleshooting
 
-### Variable Not Being Read
+### Variable not being read
 
-1. Check spelling (case-sensitive)
-2. Verify the variable is exported: `echo $VARIABLE_NAME`
-3. Check for extra spaces or quotes
-4. Restart the application after changes
+1. Check spelling — env vars are case-sensitive.
+2. Confirm it's exported: `echo $VARIABLE_NAME`.
+3. Strip stray whitespace and quotes.
+4. Restart the process after changes — env vars are read once at boot.
 
-### Docker Not Seeing Variables
+### Provider sign-in says "no credentials available"
 
-1. Verify `-e` flag syntax: `-e VAR=value`
-2. Check `.env` file is in the correct location
-3. Verify `env_file` path in `docker-compose.yml`
+LLM provider sign-ins live in `<workspace>/secure/data/stackllm_auth.json`, **not** in env vars. Open `/engine` and sign in via the UI.
 
-### Precedence Issues
+### Token set in both YAML and admin UI — which wins?
 
-Remember the precedence order:
-```
-CLI flags > Environment variables > Config file > Defaults
-```
-
-An environment variable will override the config file value.
+The DB row in `op_chat_providers` always wins for chat-platform tokens. For `GITHUB_TOKEN`, the `op_secrets` row wins. Pick one source of truth and stick with it.

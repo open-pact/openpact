@@ -61,82 +61,69 @@ OpenPact provides a comprehensive system for managing secrets (API keys, tokens,
 
 ## Secret Injection
 
-### From Environment Variables
+### From the Admin UI
 
-The most secure method for production:
+This is the only supported path for Starlark secrets. The values are encrypted at rest in `op_secrets` (AES-256-GCM under `data_encryption_key`).
 
-```yaml
-# openpact.yaml
-starlark:
-  secrets:
-    WEATHER_API_KEY: "${WEATHER_API_KEY}"
-    GITHUB_TOKEN: "${GITHUB_TOKEN}"
-```
+1. Navigate to **Secrets** (`/secrets`).
+2. Click **Add Secret**.
+3. Enter name and value.
+4. Click **Save**.
 
-At startup, OpenPact resolves environment variable references:
+The value is encrypted before insert; the API never returns it.
 
-```bash
-export WEATHER_API_KEY="sk-abc123..."
-export GITHUB_TOKEN="ghp_xyz789..."
-./openpact serve
-```
+### Special: GitHub token
 
-### From Admin UI
+`GITHUB_TOKEN` is a slight exception — it's used by the GitHub MCP tools (not just Starlark scripts) and can be supplied either via the admin UI's **Secrets** page (as a `GITHUB_TOKEN` row in `op_secrets`) **or** via the `GITHUB_TOKEN` environment variable. The DB row wins when both are set.
 
-Secrets can be set through the Admin UI:
+### Special: chat-provider tokens
 
-1. Navigate to `/secrets`
-2. Click "Add Secret"
-3. Enter name and value
-4. Click "Save"
+Discord, Slack, and Telegram tokens live in `op_chat_providers`, not `op_secrets`. Set them via **Providers** in the admin UI, or use the `DISCORD_TOKEN` / `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `TELEGRAM_BOT_TOKEN` env-var fallbacks.
 
-The value is encrypted before storage.
+### Special: LLM provider tokens
 
-### From Configuration File
-
-For development only (not recommended for production):
-
-```yaml
-# openpact.yaml - DEVELOPMENT ONLY
-starlark:
-  secrets:
-    WEATHER_API_KEY: "sk-abc123..."  # Don't do this in production
-```
+OpenAI, Gemini, Copilot, and Ollama credentials are owned by stackllm and stored in `<workspace>/secure/data/stackllm_auth.json` (mode `0600`). Sign in via the admin UI's **Engine** page (`/engine`); there is no env-var fallback for these.
 
 :::warning
-Never commit plain-text secrets to version control. Always use environment variable references in configuration files.
+Never commit plain-text secrets to version control. Use the admin UI for Starlark secrets, env vars for provider-fallback tokens, and a real secrets manager (Vault, AWS Secrets Manager, etc.) injecting env vars in production.
 :::
 
 ## Secret Storage
 
 ### Encryption at Rest
 
-Secrets are encrypted using AES-256-GCM:
+Starlark secrets live in the `op_secrets` table inside the shared SQLite database (`<workspace>/secure/data/stackllm.db`). Each value is encrypted with **AES-256-GCM** under a per-installation `data_encryption_key` (separate from the JWT signing key, with its own rotation schedule).
+
+A row looks roughly like:
 
 ```
-secure/data/secrets.json
-{
-  "WEATHER_API_KEY": {
-    "value": "encrypted:aes256gcm:nonce:ciphertext:tag",
-    "last_updated": "2024-01-15T10:30:00Z"
-  }
-}
+op_secrets
+| name              | nonce | ciphertext       | last_updated         |
+|-------------------|-------|------------------|----------------------|
+| WEATHER_API_KEY   | …     | <encrypted blob> | 2026-04-15T10:30:00Z |
+| GITHUB_TOKEN      | …     | <encrypted blob> | 2026-04-14T09:00:00Z |
 ```
 
-The encryption key is derived from the JWT secret using HKDF.
+The plaintext value is decrypted in-memory only when a Starlark script calls `secrets.get()`.
 
 ### File Permissions
 
 ```bash
-# Secrets file
--rw-------  1 openpact openpact  1234 Jan 15 10:30 secure/data/secrets.json
+# Encryption key (separate file)
+-rw-------  1 openpact openpact   32 Apr 15 10:00 secure/data/data_encryption_key
+
+# JWT signing key (also separate)
+-rw-------  1 openpact openpact   32 Apr 15 10:00 secure/data/jwt_secret
+
+# Shared SQLite DB (op_secrets lives here, encrypted at the column level)
+-rw-------  1 openpact openpact  ... Apr 15 10:30 secure/data/stackllm.db
 
 # Secure directory (AI has ZERO access)
-drwx------  2 openpact openpact  4096 Jan 15 10:00 secure/
-drwx------  2 openpact openpact  4096 Jan 15 10:00 secure/data/
+drwx------  2 openpact openpact  ... Apr 15 10:00 secure/
+drwx------  2 openpact openpact  ... Apr 15 10:00 secure/data/
 ```
 
-Only the OpenPact process can read these files.
+Only the OpenPact process can read these files. The agent has no tool that reaches `secure/` and Linux permissions back the boundary up.
 
 ## Automatic Redaction
 
@@ -354,7 +341,7 @@ For critical secrets, use this pattern:
 ### Storage
 
 - [ ] Verify `secure/` directory permissions (700)
-- [ ] Verify `secure/data/secrets.json` file permissions (600)
+- [ ] Verify `secure/data/stackllm.db` and `secure/data/data_encryption_key` permissions (600)
 - [ ] Ensure backups don't contain unencrypted secrets
 
 ### Access

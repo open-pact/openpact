@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: Principle of Least Privilege
-description: Tool access, MCP restrictions, and environment isolation
+description: Tool registry, MCP boundaries, and workspace scoping
 ---
 
 # Principle of Least Privilege
@@ -12,153 +12,161 @@ OpenPact implements the principle of least privilege throughout its architecture
 
 The principle of least privilege (PoLP) states that every component, user, or process should have only the access rights necessary to perform its legitimate purpose. This limits the damage that can result from accidents, errors, or unauthorized use.
 
-## Two-Layer Security Model
+## Three-Layer Security Model
 
-OpenPact enforces least privilege through two independent layers:
+OpenPact enforces least privilege through three independent layers. Each one assumes the layer above it could fail.
 
-### Layer 1: Linux User Separation
+### Layer 1: Tool Registry Boundary
 
-The AI process (`opencode serve`) runs as `openpact-ai`, a restricted Linux user, while the orchestrator runs as `openpact-system`. File permissions enforce boundaries:
+The LLM agent is a Go function call, not a separate process. It can only call tools that have been explicitly registered in stackllm's `tools.Registry`. The registry is populated **once**, at boot, by `engine.RegisterMCPTools` walking OpenPact's MCP server catalogue.
 
-| Path | Owner | Mode | AI Access |
-|------|-------|------|-----------|
-| `/workspace/` | openpact-system:openpact | 750 | Group-read/execute (can traverse) |
-| `/workspace/secure/` | openpact-system:openpact | 700 | **Denied** (owner-only) |
-| `/workspace/secure/config.yaml` | openpact-system:openpact | 600 | **Denied** (owner-only) |
-| `/workspace/secure/data/` | openpact-system:openpact | 700 | **Denied** (owner-only) |
-| `/workspace/ai-data/` | openpact-system:openpact | 750 | Group-read/execute (MCP tools scope here) |
-| `/workspace/ai-data/memory/` | openpact-system:openpact | 770 | Group-read/write |
-| `/workspace/ai-data/scripts/` | openpact-system:openpact | 750 | Group-read |
-| `/workspace/ai-data/skills/` | openpact-system:openpact | 750 | Group-read |
-| `/workspace/ai-data/SOUL.md` | openpact-system:openpact | 640 | Group-read |
-| `/workspace/ai-data/USER.md` | openpact-system:openpact | 640 | Group-read |
-| `/workspace/ai-data/MEMORY.md` | openpact-system:openpact | 660 | Group-read/write |
+This means:
 
-### Layer 2: Application Tool Restriction
+- A tool that wasn't registered cannot be called. There is no shell, no `bash`, no `eval`, no arbitrary file IO — those tools were never registered.
+- Adding a new capability to the agent requires writing Go code, registering it via `mcp.RegisterAllTools`, and rebuilding the binary. There is no runtime path to grant new tools.
 
-OpenCode's built-in tools (bash, write, edit, read, grep, glob, list, patch, webfetch, websearch) are all disabled via the `OPENCODE_CONFIG_CONTENT` environment variable. The AI can only use explicitly registered MCP tools provided by OpenPact's standalone MCP server.
+### Layer 2: In-Tool Authorization
 
-## AI Access Restrictions
+Each registered tool enforces its own scoping in code. The agent can call the tool, but the tool decides what the call does.
 
-### What the AI Can Access
+| Tool | Scoping rule |
+|------|--------------|
+| `workspace_*` | Path validated to be inside `<workspace>/ai-data/`. Symlink escape prevented. |
+| `memory_*` | Hard-coded paths: `MEMORY.md`, `SOUL.md`, `USER.md`, daily files under `ai-data/memory/`. |
+| `script_run` / `script_exec` | Starlark sandbox: no filesystem, no shell, HTTP-only, configurable wall-clock + memory caps. |
+| `vault_*` | Constrained to the configured vault path. Git operations only against the configured remote. |
+| `web_fetch` | Outbound HTTPS only, response size capped, no `file://`. |
+| `github_*` | Scoped to the GitHub PAT's permissions. |
+| `calendar_read` | Reads only the iCal feeds configured in `/integrations`. |
+| `discord_send` | Posts only to channels enabled for the bot. |
 
-| Resource | Access Level | How |
-|----------|--------------|-----|
-| MCP tools | Defined set only | Registered tools via MCP server |
-| Script execution | Approved only | `script_run` MCP tool (requires admin approval) |
-| Workspace files | Read via MCP | `workspace_read`, `workspace_list` tools |
-| Memory system | Read/write via MCP | `memory_read`, `memory_write` tools |
-| Web content | Fetch via MCP | `web_fetch` tool |
-| Calendar | Read via MCP | `calendar_read` tool |
-| Chat providers | Send via MCP | `chat_send` tool |
+### Layer 3: Filesystem Permissions
 
-### What the AI Cannot Access
+The workspace is split into `secure/` (mode `0700`, system-only) and `ai-data/` (mode `0755`, AI-accessible):
 
-- **Shell commands** -- OpenCode's `bash` tool is disabled
-- **Direct file writes** -- OpenCode's `write`/`edit`/`patch` tools are disabled
-- **Environment variables** -- only LLM provider keys and system basics are passed through
-- **Sensitive tokens** -- DISCORD_TOKEN, GITHUB_TOKEN, SLACK_BOT_TOKEN, ADMIN_JWT_SECRET excluded
-- **Secure directory** -- `secure/` has owner-only permissions (700), blocking group access to config and data
-- **Config file** -- inside `secure/`, owner-only permissions (600)
-- **Secret values** -- scripts see secrets but output is redacted with `[REDACTED]`
-- **Unapproved scripts** -- `script_run` checks approval status
-- **Admin UI operations** -- admin API requires JWT auth
+| Path | Mode | Description |
+|------|------|-------------|
+| `<workspace>/` | 0755 | Top-level (browseable). |
+| `<workspace>/secure/` | 0700 | System-only. |
+| `<workspace>/secure/config.yaml` | 0600 | Bootstrap config. |
+| `<workspace>/secure/data/` | 0700 | System data dir. |
+| `<workspace>/secure/data/jwt_secret` | 0600 | JWT signing key. |
+| `<workspace>/secure/data/data_encryption_key` | 0600 | AES-256 key for `op_secrets`. |
+| `<workspace>/secure/data/stackllm_auth.json` | 0600 | Provider tokens. |
+| `<workspace>/secure/data/stackllm.db` | 0600 | Shared SQLite (`op_*` + `stackllm_*` tables). |
+| `<workspace>/ai-data/` | 0755 | AI-accessible root. |
+| `<workspace>/ai-data/memory/` | 0755 | Daily memory files. |
+| `<workspace>/ai-data/scripts/` | 0755 | Starlark scripts. |
+| `<workspace>/ai-data/skills/` | 0755 | Skills. |
+| `<workspace>/ai-data/SOUL.md` etc. | 0644 | Context files. |
 
-## Environment Variable Isolation
+This is mostly belt-and-braces protection now — Layer 2 already keeps the agent out of `secure/` because no registered tool exposes those paths. Layer 3 catches the case where a tool implementation has a path-traversal bug: the OS refuses the read because the running user has no permission to enter `secure/`.
 
-The AI process receives a filtered environment. Only these variables pass through:
+## What the Agent Can Access
 
-**System basics:** `PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TZ`, `TMPDIR`, `XDG_*`
+| Resource | Access | How |
+|----------|--------|-----|
+| Workspace files | Read/write under `ai-data/` | `workspace_*` tools |
+| Memory | Read all, write to MEMORY.md and daily files | `memory_*` tools |
+| Web content | HTTP/HTTPS GET, response capped | `web_fetch` |
+| Calendar | Read-only, configured feeds only | `calendar_read` |
+| Vault | Read/write under vault path; optional git auto-sync | `vault_*` |
+| GitHub | Limited by PAT scopes | `github_*` |
+| Scripts | Approved scripts in `ai-data/scripts/` | `script_run` |
+| Inline Starlark | Sandboxed; no filesystem | `script_exec` |
+| Discord | Send to configured channels | `discord_send` |
 
-**LLM provider keys:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `AZURE_OPENAI_API_KEY`, `OLLAMA_HOST`
+## What the Agent Cannot Access
 
-**Explicitly excluded:** `DISCORD_TOKEN`, `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `ADMIN_JWT_SECRET`, all Starlark secrets, and any other environment variable not in the allowlist.
+- **Shell / `os.exec`** — no such tool is registered.
+- **Direct filesystem writes outside `ai-data/`** — workspace tools enforce the boundary.
+- **`secure/`** — no tool exposes it; OS permissions back the boundary up.
+- **Secret values** — Starlark `secrets.get()` returns the value to the script, but output is scanned and replaced with `[REDACTED:NAME]` before reaching the agent.
+- **Provider tokens** — stored in `stackllm_auth.json` (0600), never surfaced to tools.
+- **JWT signing key** — stored in `secure/data/jwt_secret` (0600).
+- **Process environment** — there is no env-passing path from agent code to tool implementations; tools that need env values read them in Go, never via the agent's prompts.
+- **Other operators' admin sessions** — JWT-protected admin API; rate-limited login.
 
-In Docker, the entrypoint sets `HOME` and `USER` to the AI user's home directory when launching OpenCode as `openpact-ai`.
+## The MCP Tool Boundaries Table
 
-## MCP Tool Boundaries
-
-Each MCP tool has explicit capability boundaries:
-
-### File Tools
-
-| Tool | Capabilities | Restrictions |
-|------|--------------|--------------|
-| `workspace_read` | Read workspace files | `ai-data/` directory only, path validation |
-| `workspace_write` | Write workspace files | `ai-data/` directory only, path validation |
-| `workspace_list` | List workspace contents | `ai-data/` directory only |
-
-### Memory Tools
-
-| Tool | Capabilities | Restrictions |
-|------|--------------|--------------|
-| `memory_read` | Read MEMORY.md, SOUL.md, USER.md, daily files | Validated paths only |
-| `memory_write` | Write memory/context files | Validated paths only, triggers context reload |
-
-### Script Tools
+### File tools
 
 | Tool | Capabilities | Restrictions |
 |------|--------------|--------------|
-| `script_run` | Execute approved scripts | Admin approval required, sandboxed |
-| `script_exec` | Execute inline Starlark | Sandboxed, no filesystem access |
-| `script_list` | View script metadata | Includes approval status |
-| `script_reload` | Reload scripts from disk | Admin must place files |
+| `workspace_read` | Read workspace files | `ai-data/` only, path validation. |
+| `workspace_write` | Write workspace files | `ai-data/` only, path validation. |
+| `workspace_list` | List workspace contents | `ai-data/` only. |
 
-### Communication Tools
+### Memory tools
 
 | Tool | Capabilities | Restrictions |
 |------|--------------|--------------|
-| `chat_send` | Send messages via providers | Provider must be active |
-| `web_fetch` | Fetch HTTP/HTTPS URLs | Read-only, size limits |
-| `calendar_read` | Read calendar events | Configured feeds only |
+| `memory_read` | Read MEMORY.md, SOUL.md, USER.md, daily files | Validated paths only. |
+| `memory_write` | Write memory/context files | Validated paths only; reload on next session. |
+
+### Script tools
+
+| Tool | Capabilities | Restrictions |
+|------|--------------|--------------|
+| `script_run` | Execute approved scripts | Admin approval required (or in `admin.allowlist`); sandboxed. |
+| `script_exec` | Execute inline Starlark | Sandboxed; no filesystem. |
+| `script_list` | View script metadata | Includes approval status. |
+| `script_reload` | Reload scripts from disk | Admin must place files. |
+
+### Communication tools
+
+| Tool | Capabilities | Restrictions |
+|------|--------------|--------------|
+| `discord_send` | Send messages on Discord | Channel must be in the bot's allow list. |
+| `web_fetch` | Fetch HTTP/HTTPS URLs | Read-only; size cap. |
+| `calendar_read` | Read calendar events | Configured feeds only. |
+| `vault_read/write/list/search` | Operate on the configured vault | Optional git auto-sync to configured remote. |
+| `github_*` | GitHub issue management | Scoped by PAT permissions. |
 
 ## Configuration
 
-### Enabling User Separation
+There is no toggle for the registry. The set of tools is whatever `mcp.RegisterAllTools` registers at startup; reducing the surface area means editing that function and rebuilding. The registry is the security model.
 
-In Docker, user separation is automatic. The entrypoint launches OpenCode as `openpact-ai` and the orchestrator as `openpact-system` — no configuration needed.
+For runtime restrictions:
 
-The MCP server binary is auto-discovered at startup (next to the main binary, or via PATH). No configuration is needed.
+- **Calendar feeds, vault path, GitHub toggle** → `/integrations` in the admin UI.
+- **Chat-provider allow lists** → `/providers` (Discord/Slack/Telegram allow lists).
+- **Starlark limits** → `/settings/advanced` (`max_execution_ms`, `max_memory_mb`).
+- **Starlark allowlist** (scripts pre-approved without per-run prompt) → `admin.allowlist` in `config.yaml`.
 
-### Dev Mode vs Production
+## Auditing
 
-| Setting | Dev Mode | Production (Docker) |
-|---------|----------|---------------------|
-| User separation | None (single user) | Entrypoint runs OpenCode as `openpact-ai` |
-| MCP server | Auto-discovered from PATH | Auto-discovered at `/app/mcp-server` |
-| Built-in tools | Disabled (config still applied) | Disabled |
-| File permissions | Host OS permissions | Entrypoint sets strict permissions |
+### Periodic review
 
-## Monitoring Least Privilege
-
-### Audit Questions
-
-Periodically review:
-
+- Which scripts are approved? Are all of them still needed?
 - Which scripts have access to which secrets?
-- Are all approved scripts still needed?
-- Are there unused secrets that should be removed?
-- Is the workspace directory appropriately scoped?
+- Who has admin access to the UI?
+- Are the allow lists for Discord/Slack/Telegram still correct?
 
 ### Verification
 
 ```bash
-# Verify AI process runs as correct user
-docker exec <container> ps aux | grep opencode
-# Should show openpact-ai, not openpact-system
+# Check workspace permissions
+docker exec openpact ls -la /workspace
+# secure/ should be drwx------ (700)
 
-# Verify file permissions
-docker exec <container> ls -la /workspace/
-docker exec <container> ls -la /workspace/ai-data/
+docker exec openpact ls -la /workspace/secure/data
+# stackllm_auth.json should be -rw------- (600)
+# stackllm.db should be -rw------- (600)
+```
+
+```bash
+# Confirm the registered tool set
+docker exec openpact /app/mcp-server --list-tools 2>/dev/null
+# (or inspect internal/mcp/register.go in the source)
 ```
 
 ## Summary
 
-| Component | Least Privilege Implementation |
-|-----------|-------------------------------|
-| AI process | Runs as `openpact-ai`, filtered env, disabled built-in tools |
-| MCP tools | Explicit registration, path validation, approval workflow |
-| Scripts | Starlark sandbox, admin approval, secret redaction |
-| Workspace | AI scoped to `ai-data/` only, group-based permissions |
-| Secrets | Owner-only `secure/data/` dir, env filtering, output redaction |
-| Container | Non-root users, entrypoint permissions, Docker isolation |
+| Layer | Implementation |
+|-------|---------------|
+| Tool registry | Static set populated at boot by `mcp.RegisterAllTools`. Unregistered tools cannot be called. |
+| In-tool authorization | Each tool enforces its own scoping (workspace boundary, allow lists, sandbox). |
+| Filesystem permissions | `secure/` 0700, `secure/data/*` 0600, `ai-data/` 0755. |
+| Admin API | JWT auth, rate-limited; setup wizard guards onboarding. |
+| Starlark | Sandbox + secret redaction + admin approval workflow. |
